@@ -9,78 +9,43 @@ import time
 from datetime import datetime, timedelta
 
 # --- CONFIGURAÇÃO INICIAL ---
-st.set_page_config(
-    page_title="Gestão de Frota Pro | Andrioni", 
-    layout="wide", 
-    page_icon="🚛",
-    initial_sidebar_state="expanded"
-)
-
-SHEET_NAME = "frota_db"
-
-# ATUALIZADO: Adicionado 'responsavel' ao final da lista
-LOG_COLUMNS = ["id", "placa", "tipo_servico", "km_realizada", "data_realizada", "proxima_km", "mecanico", "valor", "obs", "status", "responsavel"]
-
-# --- CSS Otimizado ---
+# --- CSS OTIMIZADO PARA TEMA NATIVO DARK ---
 st.markdown("""
 <style>
-    /* 1. Fundo Principal */
-    .stApp { 
-        background-color: #0E1117; 
-        color: #FFFFFF;
-    }
-    
-    /* 2. Forçar cor branca em todos os textos básicos e títulos */
-    p, h1, h2, h3, label, .stMarkdown, div[data-testid="stMarkdownContainer"] p {
-        color: #FFFFFF !important;
+    /* 1. Ajuste de Texto para melhor contraste */
+    .stMarkdown, p, h1, h2, h3, label {
+        color: #E0E0E0 !important; /* Um tom de branco mais suave */
     }
 
-    /* 3. Estilização dos Inputs (Caixas de Texto e Selects) */
-    /* Fundo Escuro Suave para os campos */
-    div[data-baseweb="select"] > div, 
-    div[data-baseweb="input"] > div,
-    div[data-testid="stNumberInput"] > div {
-        background-color: #262730 !important;
-        border-color: #4C4F56 !important;
-        color: #FFFFFF !important;
-    }
-
-    /* Cor do texto digitado ou selecionado */
-    input, .stSelectbox span {
-        color: #FFFFFF !important;
-    }
-    
-    /* Ícone da setinha do selectbox */
-    svg {
-        fill: #FFFFFF !important;
-    }
-
-    /* 4. Cards e Containers */
+    /* 2. Cards e Containers */
     div[data-testid="stContainer"], .stExpander {
-        background-color: #16171D;
+        background-color: #16171D; /* Fundo ligeiramente mais claro para destacar */
         border: 1px solid #31353F;
         border-radius: 8px;
     }
-    
-    /* Cabeçalho do Expander (Onde clica para abrir) */
+    /* Cabeçalho do Expander para ficar igual ao container */
     .streamlit-expanderHeader {
-        background-color: #262730 !important;
-        color: #FFFFFF !important;
-        border-radius: 5px;
+        background-color: #16171D !important;
+        border-radius: 8px;
     }
 
-    /* 5. Métricas e Status */
-    div[data-testid="stMetricValue"] { color: #4DB6AC !important; }
+    /* 3. Métricas e Status (Cores vibrantes para destaque) */
+    div[data-testid="stMetricValue"] { color: #4DB6AC !important; font-weight: bold; }
     .status-ok { color: #66BB6A; font-weight: bold; }
     .status-atencao { color: #FFA726; font-weight: bold; }
     .status-vencido { color: #EF5350; font-weight: bold; }
     
-    /* 6. Botões */
+    /* 4. Botões com estilo mais profissional */
     .stButton button { 
         width: 100%; 
-        border-radius: 5px;
+        border-radius: 6px;
         font-weight: 600;
         border: 1px solid #4C4F56;
+        transition: all 0.2s ease-in-out;
+    }
+    .stButton button:hover {
+        border-color: #4DB6AC;
+        color: #4DB6AC;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -460,3 +425,4 @@ def main():
 if __name__ == "__main__":
 
     main()
+
