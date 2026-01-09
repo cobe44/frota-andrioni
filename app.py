@@ -16,52 +16,62 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- CORREÇÃO DO ERRO DE CONEXÃO ---
-# O nome da planilha no Google Drive deve ser EXATAMENTE este:
 SHEET_NAME = "frota_db"
-
-# Definição das colunas para evitar erros de leitura
 LOG_COLUMNS = ["id", "placa", "tipo_servico", "km_realizada", "data_realizada", "proxima_km", "mecanico", "valor", "obs", "status", "responsavel"]
 
-# --- CSS OTIMIZADO (DARK MODE) ---
+# --- CSS MODO CLARO (LIGHT MODE) ---
+# Fundo Branco + Letras Escuras
 st.markdown("""
 <style>
-    /* 1. Ajuste de Texto Geral */
-    .stMarkdown, p, h1, h2, h3, label, span, div {
-        color: #E0E0E0 !important;
+    /* 1. Forçar letras escuras (Preto/Cinza Escuro) para contraste com fundo branco */
+    .stMarkdown, p, h1, h2, h3, h4, label, span, div {
+        color: #31333F !important;
     }
     
     /* 2. Cards e Containers */
+    /* Fundo branco com sombra leve e borda cinza */
     div[data-testid="stContainer"], .stExpander {
-        background-color: #16171D;
-        border: 1px solid #31353F;
+        background-color: #FFFFFF;
+        border: 1px solid #E0E0E0;
         border-radius: 8px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
     }
     
     /* 3. Cabeçalho do Expander */
     .streamlit-expanderHeader {
-        background-color: #16171D !important;
-        border-radius: 8px;
-        color: #E0E0E0 !important;
+        background-color: #F8F9FA !important;
+        color: #31333F !important;
+        border-bottom: 1px solid #E0E0E0;
     }
 
-    /* 4. Métricas e Status */
-    div[data-testid="stMetricValue"] { color: #4DB6AC !important; font-weight: bold; }
-    .status-ok { color: #66BB6A; font-weight: bold; }
-    .status-atencao { color: #FFA726; font-weight: bold; }
-    .status-vencido { color: #EF5350; font-weight: bold; }
-    
-    /* 5. Inputs (Correção Fundo Branco) */
-    .stTextInput input, .stNumberInput input, .stSelectbox div, .stDateInput input {
-        color: #E0E0E0 !important;
+    /* 4. Inputs (Caixas de Texto) */
+    /* Garante que o texto digitado seja escuro */
+    .stTextInput input, .stNumberInput input, .stSelectbox div, .stDateInput input, textarea {
+        color: #31333F !important;
+        background-color: #FFFFFF !important;
+        border-color: #D6D6D6 !important;
     }
     
+    /* 5. Métricas e Status */
+    div[data-testid="stMetricValue"] { color: #009688 !important; font-weight: bold; }
+    
+    /* Cores de status mais escuras para ler no branco */
+    .status-ok { color: #2E7D32; font-weight: bold; }      /* Verde Escuro */
+    .status-atencao { color: #F57C00; font-weight: bold; } /* Laranja Escuro */
+    .status-vencido { color: #C62828; font-weight: bold; } /* Vermelho Escuro */
+
     /* 6. Botões */
     .stButton button { 
         width: 100%; 
         border-radius: 6px; 
         font-weight: 600; 
-        border: 1px solid #4C4F56;
+        color: #31333F !important;
+        border: 1px solid #B0B0B0;
+        background-color: #F0F2F6;
+    }
+    .stButton button:hover {
+        border-color: #009688;
+        color: #009688 !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -72,11 +82,10 @@ def connect_sheets():
     try:
         creds = st.secrets["gcp_service_account"]
         gc = gspread.service_account_from_dict(creds)
-        # Aqui ele usa a variável SHEET_NAME definida lá em cima
         return gc.open(SHEET_NAME)
     except Exception as e:
-        st.error(f"❌ Erro de conexão com Google Sheets: {e}")
-        st.info(f"Verifique se o arquivo no Google Drive se chama exatamente '{SHEET_NAME}'")
+        st.error(f"❌ Erro de conexão: {e}")
+        st.info(f"Verifique se a planilha '{SHEET_NAME}' existe no Drive.")
         st.stop()
 
 def init_db():
@@ -84,7 +93,6 @@ def init_db():
         sh = connect_sheets()
         existing = [ws.title for ws in sh.worksheets()]
         
-        # Garante abas necessárias
         if "maintenance_logs" not in existing:
             ws = sh.add_worksheet(title="maintenance_logs", rows=100, cols=20)
             ws.append_row(LOG_COLUMNS)
@@ -208,7 +216,7 @@ def delete_maintenance(id_m):
         if cell: ws.delete_rows(cell.row)
     except: pass
 
-# --- INTEGRAÇÃO SASCAR ---
+# --- SASCAR ---
 def soap_request(method, user, pwd, params_body):
     url = "https://sasintegra.sascar.com.br/SasIntegra/SasIntegraWSService?wsdl"
     headers = {'Content-Type': 'text/xml; charset=utf-8'}
@@ -265,11 +273,10 @@ def baixar_veiculos_auto(user, pwd):
     except: return False
     return False
 
-# --- APP PRINCIPAL ---
+# --- APP ---
 def main():
     init_db()
     
-    # Session State
     if 'edit_mode' not in st.session_state: st.session_state.edit_mode = False
     if 'edit_data' not in st.session_state: st.session_state.edit_data = {}
     if 'realizar_id' not in st.session_state: st.session_state.realizar_id = None
@@ -277,8 +284,7 @@ def main():
     if 'p' not in st.session_state: st.session_state.p = ''
     if 'last_update' not in st.session_state: st.session_state.last_update = datetime.now() - timedelta(hours=3)
 
-    # Sidebar
-    st.sidebar.title("🚛 Frota Manager v3.5")
+    st.sidebar.title("🚛 Frota Manager v3.6")
     with st.sidebar.expander("⚙️ Conexão Sascar"):
         u = st.text_input("Usuário", value=st.session_state.u)
         p = st.text_input("Senha", type="password", value=st.session_state.p)
@@ -292,7 +298,6 @@ def main():
         st.session_state.last_update = agora
         st.rerun()
 
-    # Cabeçalho
     c_top1, c_top2 = st.columns([4, 1])
     c_top1.title("Painel de Controle Andrioni")
     if c_top2.button("🔄 Atualizar"):
@@ -303,13 +308,11 @@ def main():
             time.sleep(1); st.rerun()
         else: st.warning("Configure Sascar")
 
-    # Load Data
     df_v = get_data("vehicles")
     veiculos = df_v['placa'].tolist() if not df_v.empty else []
     df_pos = get_data("positions")
     df_maint = get_data("maintenance_logs")
 
-    # --- FORMULÁRIO ---
     with st.expander("➕ Nova Programação / Lançamento", expanded=st.session_state.edit_mode):
         d = st.session_state.edit_data if st.session_state.edit_mode else {}
         
@@ -387,7 +390,6 @@ def main():
 
     st.divider()
 
-    # --- DASHBOARD ---
     tab_prog, tab_hist = st.tabs(["📅 Aberto", "✅ Histórico"])
     
     if not df_v.empty and not df_pos.empty:
