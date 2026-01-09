@@ -9,43 +9,52 @@ import time
 from datetime import datetime, timedelta
 
 # --- CONFIGURAÇÃO INICIAL ---
+st.set_page_config(
+    page_title="Gestão de Frota Pro | Andrioni", 
+    layout="wide", 
+    page_icon="🚛",
+    initial_sidebar_state="expanded"
+)
+
+SHEET_NAME = "frota_db"
+
+# --- CORREÇÃO DO ERRO: DEFINIÇÃO DA VARIÁVEL ---
+# Esta lista precisa estar aqui para ser usada nas funções abaixo
+LOG_COLUMNS = ["id", "placa", "tipo_servico", "km_realizada", "data_realizada", "proxima_km", "mecanico", "valor", "obs", "status", "responsavel"]
+
 # --- CSS OTIMIZADO PARA TEMA NATIVO DARK ---
 st.markdown("""
 <style>
     /* 1. Ajuste de Texto para melhor contraste */
-    .stMarkdown, p, h1, h2, h3, label {
-        color: #E0E0E0 !important; /* Um tom de branco mais suave */
+    .stMarkdown, p, h1, h2, h3, label, span {
+        color: #E0E0E0 !important;
     }
 
     /* 2. Cards e Containers */
     div[data-testid="stContainer"], .stExpander {
-        background-color: #16171D; /* Fundo ligeiramente mais claro para destacar */
+        background-color: #16171D;
         border: 1px solid #31353F;
         border-radius: 8px;
     }
-    /* Cabeçalho do Expander para ficar igual ao container */
+    /* Cabeçalho do Expander */
     .streamlit-expanderHeader {
         background-color: #16171D !important;
         border-radius: 8px;
+        color: #E0E0E0 !important;
     }
 
-    /* 3. Métricas e Status (Cores vibrantes para destaque) */
+    /* 3. Métricas e Status */
     div[data-testid="stMetricValue"] { color: #4DB6AC !important; font-weight: bold; }
     .status-ok { color: #66BB6A; font-weight: bold; }
     .status-atencao { color: #FFA726; font-weight: bold; }
     .status-vencido { color: #EF5350; font-weight: bold; }
     
-    /* 4. Botões com estilo mais profissional */
+    /* 4. Botões */
     .stButton button { 
         width: 100%; 
         border-radius: 6px;
         font-weight: 600;
         border: 1px solid #4C4F56;
-        transition: all 0.2s ease-in-out;
-    }
-    .stButton button:hover {
-        border-color: #4DB6AC;
-        color: #4DB6AC;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -100,7 +109,7 @@ def get_data(table_name):
         
         if table_name == "maintenance_logs":
             if df.empty: return pd.DataFrame(columns=LOG_COLUMNS)
-            # Adiciona colunas faltantes (Auto-Cura se adicionar campos novos)
+            # Adiciona colunas faltantes (Auto-Cura)
             for col in LOG_COLUMNS:
                 if col not in df.columns: df[col] = ""
             df = df[LOG_COLUMNS] # Ordena
@@ -113,6 +122,7 @@ def get_data(table_name):
             
         return df
     except Exception as e:
+        # Aqui estava o erro: LOG_COLUMNS precisa existir
         if table_name == "maintenance_logs": return pd.DataFrame(columns=LOG_COLUMNS)
         return pd.DataFrame()
 
@@ -142,7 +152,7 @@ def salvar_posicoes_otimizado(novas_posicoes):
         return len(df_novo)
     except: return 0
 
-# --- CRUD (ATUALIZADO COM RESPONSAVEL) ---
+# --- CRUD ---
 
 def get_next_id(ws):
     try:
@@ -261,7 +271,7 @@ def main():
     if 'p' not in st.session_state: st.session_state.p = ''
     if 'last_update' not in st.session_state: st.session_state.last_update = datetime.now() - timedelta(hours=3)
 
-    st.sidebar.title("🚛 Frota Manager v3.3")
+    st.sidebar.title("🚛 Frota Manager v3.4")
     with st.sidebar.expander("⚙️ Conexão Sascar"):
         u = st.text_input("Usuário", value=st.session_state.u)
         p = st.text_input("Senha", type="password", value=st.session_state.p)
@@ -325,15 +335,12 @@ def main():
             km_final_programado = input_km_base + input_intervalo
             st.caption(f"🏁 Próxima troca: **{km_final_programado:,.0f} km**")
 
-            # LINHA DE DADOS FINANCEIROS E RESPONSÁVEL
             c5, c6, c7 = st.columns(3)
             try: dt_ini = datetime.strptime(str(d.get('data_realizada', '')), '%Y-%m-%d').date()
             except: dt_ini = datetime.now()
             
             input_data = c5.date_input("Data", dt_ini, format="DD/MM/YYYY")
             input_valor = c6.number_input("Valor (R$)", value=float(d.get('valor', 0)))
-            
-            # --- NOVO CAMPO: RESPONSÁVEL ---
             input_resp = c7.text_input("Responsável", value=d.get('responsavel', ''))
 
             obs = st.text_area("Obs", value=d.get('obs', ''), height=70)
@@ -371,7 +378,7 @@ def main():
 
     st.divider()
 
-    # --- DASHBOARD VISUAL (CARDS) ---
+    # --- DASHBOARD VISUAL ---
     tab_prog, tab_hist = st.tabs(["📅 Aberto", "✅ Histórico"])
     
     if not df_v.empty and not df_pos.empty:
@@ -403,7 +410,6 @@ def main():
                     with c_info:
                         st.subheader(f"{icon} {placa}")
                         st.markdown(f"**Serviço:** {m['tipo_servico']}")
-                        # EXIBIR RESPONSAVEL NO CARD TAMBÉM
                         resp_txt = m.get('responsavel', '') or 'Não inf.'
                         st.caption(f"Resp: {resp_txt} | Prev: {m['data_realizada']}")
                         st.caption(f"Obs: {m['obs']}")
@@ -423,6 +429,4 @@ def main():
         else: st.info("Sem histórico.")
 
 if __name__ == "__main__":
-
     main()
-
