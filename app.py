@@ -16,44 +16,51 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# --- CORREÇÃO DO ERRO DE CONEXÃO ---
+# O nome da planilha no Google Drive deve ser EXATAMENTE este:
 SHEET_NAME = "frota_db"
 
-# --- CORREÇÃO DO ERRO: DEFINIÇÃO DA VARIÁVEL ---
-# Esta lista precisa estar aqui para ser usada nas funções abaixo
+# Definição das colunas para evitar erros de leitura
 LOG_COLUMNS = ["id", "placa", "tipo_servico", "km_realizada", "data_realizada", "proxima_km", "mecanico", "valor", "obs", "status", "responsavel"]
 
-# --- CSS OTIMIZADO PARA TEMA NATIVO DARK ---
+# --- CSS OTIMIZADO (DARK MODE) ---
 st.markdown("""
 <style>
-    /* 1. Ajuste de Texto para melhor contraste */
-    .stMarkdown, p, h1, h2, h3, label, span {
+    /* 1. Ajuste de Texto Geral */
+    .stMarkdown, p, h1, h2, h3, label, span, div {
         color: #E0E0E0 !important;
     }
-
+    
     /* 2. Cards e Containers */
     div[data-testid="stContainer"], .stExpander {
         background-color: #16171D;
         border: 1px solid #31353F;
         border-radius: 8px;
     }
-    /* Cabeçalho do Expander */
+    
+    /* 3. Cabeçalho do Expander */
     .streamlit-expanderHeader {
         background-color: #16171D !important;
         border-radius: 8px;
         color: #E0E0E0 !important;
     }
 
-    /* 3. Métricas e Status */
+    /* 4. Métricas e Status */
     div[data-testid="stMetricValue"] { color: #4DB6AC !important; font-weight: bold; }
     .status-ok { color: #66BB6A; font-weight: bold; }
     .status-atencao { color: #FFA726; font-weight: bold; }
     .status-vencido { color: #EF5350; font-weight: bold; }
     
-    /* 4. Botões */
+    /* 5. Inputs (Correção Fundo Branco) */
+    .stTextInput input, .stNumberInput input, .stSelectbox div, .stDateInput input {
+        color: #E0E0E0 !important;
+    }
+    
+    /* 6. Botões */
     .stButton button { 
         width: 100%; 
-        border-radius: 6px;
-        font-weight: 600;
+        border-radius: 6px; 
+        font-weight: 600; 
         border: 1px solid #4C4F56;
     }
 </style>
@@ -65,9 +72,11 @@ def connect_sheets():
     try:
         creds = st.secrets["gcp_service_account"]
         gc = gspread.service_account_from_dict(creds)
+        # Aqui ele usa a variável SHEET_NAME definida lá em cima
         return gc.open(SHEET_NAME)
     except Exception as e:
         st.error(f"❌ Erro de conexão com Google Sheets: {e}")
+        st.info(f"Verifique se o arquivo no Google Drive se chama exatamente '{SHEET_NAME}'")
         st.stop()
 
 def init_db():
@@ -75,6 +84,7 @@ def init_db():
         sh = connect_sheets()
         existing = [ws.title for ws in sh.worksheets()]
         
+        # Garante abas necessárias
         if "maintenance_logs" not in existing:
             ws = sh.add_worksheet(title="maintenance_logs", rows=100, cols=20)
             ws.append_row(LOG_COLUMNS)
@@ -109,10 +119,9 @@ def get_data(table_name):
         
         if table_name == "maintenance_logs":
             if df.empty: return pd.DataFrame(columns=LOG_COLUMNS)
-            # Adiciona colunas faltantes (Auto-Cura)
             for col in LOG_COLUMNS:
                 if col not in df.columns: df[col] = ""
-            df = df[LOG_COLUMNS] # Ordena
+            df = df[LOG_COLUMNS]
             for c in ['km_realizada', 'proxima_km', 'valor', 'id']:
                 df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
         
@@ -122,7 +131,6 @@ def get_data(table_name):
             
         return df
     except Exception as e:
-        # Aqui estava o erro: LOG_COLUMNS precisa existir
         if table_name == "maintenance_logs": return pd.DataFrame(columns=LOG_COLUMNS)
         return pd.DataFrame()
 
@@ -153,7 +161,6 @@ def salvar_posicoes_otimizado(novas_posicoes):
     except: return 0
 
 # --- CRUD ---
-
 def get_next_id(ws):
     try:
         col = ws.col_values(1)
@@ -165,7 +172,6 @@ def add_maintenance(placa, tipo, km, data, prox, mec, valor, obs, status, resp):
     sh = connect_sheets()
     ws = sh.worksheet("maintenance_logs")
     new_id = get_next_id(ws)
-    # Ordem: id, placa, tipo, km, data, prox, mec, valor, obs, status, responsavel
     row = [new_id, placa, tipo, km, str(data), prox, mec, valor, obs, status, resp]
     ws.append_row(row)
 
@@ -175,7 +181,6 @@ def update_maintenance_full(id_m, tipo, km, data, prox, mec, valor, obs, status,
     try:
         cell = ws.find(str(id_m), in_column=1)
         if cell:
-            # Atualiza colunas da 3 até a 11
             vals = [tipo, km, str(data), prox, mec, valor, obs, status, resp]
             for i, val in enumerate(vals):
                 ws.update_cell(cell.row, 3+i, val)
@@ -264,6 +269,7 @@ def baixar_veiculos_auto(user, pwd):
 def main():
     init_db()
     
+    # Session State
     if 'edit_mode' not in st.session_state: st.session_state.edit_mode = False
     if 'edit_data' not in st.session_state: st.session_state.edit_data = {}
     if 'realizar_id' not in st.session_state: st.session_state.realizar_id = None
@@ -271,7 +277,8 @@ def main():
     if 'p' not in st.session_state: st.session_state.p = ''
     if 'last_update' not in st.session_state: st.session_state.last_update = datetime.now() - timedelta(hours=3)
 
-    st.sidebar.title("🚛 Frota Manager v3.4")
+    # Sidebar
+    st.sidebar.title("🚛 Frota Manager v3.5")
     with st.sidebar.expander("⚙️ Conexão Sascar"):
         u = st.text_input("Usuário", value=st.session_state.u)
         p = st.text_input("Senha", type="password", value=st.session_state.p)
@@ -285,22 +292,24 @@ def main():
         st.session_state.last_update = agora
         st.rerun()
 
+    # Cabeçalho
     c_top1, c_top2 = st.columns([4, 1])
     c_top1.title("Painel de Controle Andrioni")
-    if c_top2.button("🔄 Atualizar Dados"):
+    if c_top2.button("🔄 Atualizar"):
         if st.session_state.u:
             n = baixar_posicoes_recentes(st.session_state.u, st.session_state.p)
             st.toast(f"{n} registros processados.")
             st.session_state.last_update = agora
             time.sleep(1); st.rerun()
-        else: st.warning("Configure a Sascar na lateral.")
+        else: st.warning("Configure Sascar")
 
+    # Load Data
     df_v = get_data("vehicles")
     veiculos = df_v['placa'].tolist() if not df_v.empty else []
     df_pos = get_data("positions")
     df_maint = get_data("maintenance_logs")
 
-    # --- FORMULÁRIO DE PROGRAMAÇÃO ---
+    # --- FORMULÁRIO ---
     with st.expander("➕ Nova Programação / Lançamento", expanded=st.session_state.edit_mode):
         d = st.session_state.edit_data if st.session_state.edit_mode else {}
         
@@ -360,7 +369,7 @@ def main():
             if st.session_state.edit_mode and col_b2.form_submit_button("❌ Cancelar"):
                  st.session_state.edit_mode = False; st.session_state.edit_data = {}; st.rerun()
 
-    # --- MODAL DE REALIZAÇÃO ---
+    # --- MODAL ---
     if st.session_state.realizar_id:
         st.markdown("### 🚀 Finalizando Ordem")
         with st.container(border=True):
@@ -378,7 +387,7 @@ def main():
 
     st.divider()
 
-    # --- DASHBOARD VISUAL ---
+    # --- DASHBOARD ---
     tab_prog, tab_hist = st.tabs(["📅 Aberto", "✅ Histórico"])
     
     if not df_v.empty and not df_pos.empty:
@@ -388,9 +397,7 @@ def main():
         df_view = df_v.copy(); df_view['odometro'] = 0
 
     with tab_prog:
-        if not df_maint.empty and 'status' in df_maint.columns:
-            m_abertas = df_maint[df_maint['status'] != 'Concluido']
-        else: m_abertas = pd.DataFrame()
+        m_abertas = df_maint[df_maint['status'] != 'Concluido'] if not df_maint.empty and 'status' in df_maint.columns else pd.DataFrame()
 
         if m_abertas.empty: st.info("Nenhuma programação pendente.")
         else:
@@ -423,8 +430,8 @@ def main():
                         if st.button("🗑️", key=f"del_{m['id']}"): delete_maintenance(m['id']); st.rerun()
 
     with tab_hist:
-        if not df_maint.empty and 'status' in df_maint.columns:
-            m_conc = df_maint[df_maint['status'] == 'Concluido']
+        m_conc = df_maint[df_maint['status'] == 'Concluido'] if not df_maint.empty and 'status' in df_maint.columns else pd.DataFrame()
+        if not m_conc.empty:
             st.dataframe(m_conc.drop(columns=['id'], errors='ignore'), use_container_width=True)
         else: st.info("Sem histórico.")
 
