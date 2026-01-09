@@ -24,13 +24,64 @@ LOG_COLUMNS = ["id", "placa", "tipo_servico", "km_realizada", "data_realizada", 
 # --- CSS Otimizado ---
 st.markdown("""
 <style>
-    .stApp { background-color: #0E1117; }
-    div[data-testid="stContainer"] { background-color: #16171D; border: 1px solid #31353F; border-radius: 8px; padding: 15px; }
+    /* 1. Fundo Principal */
+    .stApp { 
+        background-color: #0E1117; 
+        color: #FFFFFF;
+    }
+    
+    /* 2. Forçar cor branca em todos os textos básicos e títulos */
+    p, h1, h2, h3, label, .stMarkdown, div[data-testid="stMarkdownContainer"] p {
+        color: #FFFFFF !important;
+    }
+
+    /* 3. Estilização dos Inputs (Caixas de Texto e Selects) */
+    /* Fundo Escuro Suave para os campos */
+    div[data-baseweb="select"] > div, 
+    div[data-baseweb="input"] > div,
+    div[data-testid="stNumberInput"] > div {
+        background-color: #262730 !important;
+        border-color: #4C4F56 !important;
+        color: #FFFFFF !important;
+    }
+
+    /* Cor do texto digitado ou selecionado */
+    input, .stSelectbox span {
+        color: #FFFFFF !important;
+    }
+    
+    /* Ícone da setinha do selectbox */
+    svg {
+        fill: #FFFFFF !important;
+    }
+
+    /* 4. Cards e Containers */
+    div[data-testid="stContainer"], .stExpander {
+        background-color: #16171D;
+        border: 1px solid #31353F;
+        border-radius: 8px;
+    }
+    
+    /* Cabeçalho do Expander (Onde clica para abrir) */
+    .streamlit-expanderHeader {
+        background-color: #262730 !important;
+        color: #FFFFFF !important;
+        border-radius: 5px;
+    }
+
+    /* 5. Métricas e Status */
     div[data-testid="stMetricValue"] { color: #4DB6AC !important; }
     .status-ok { color: #66BB6A; font-weight: bold; }
     .status-atencao { color: #FFA726; font-weight: bold; }
     .status-vencido { color: #EF5350; font-weight: bold; }
-    .stButton button { width: 100%; border-radius: 5px; }
+    
+    /* 6. Botões */
+    .stButton button { 
+        width: 100%; 
+        border-radius: 5px;
+        font-weight: 600;
+        border: 1px solid #4C4F56;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -407,4 +458,5 @@ def main():
         else: st.info("Sem histórico.")
 
 if __name__ == "__main__":
+
     main()
