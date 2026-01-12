@@ -290,7 +290,7 @@ def main():
                     
                     if restante < 0:
                         s_cls = "status-vencido"; s_txt = f"🚨 VENCIDO ({abs(restante):,.0f} KM)"; b_col = "#d9534f"
-                    elif restante < 1000:
+                    elif restante < 3000:
                         s_cls = "status-atencao"; s_txt = f"⚠️ ATENÇÃO ({restante:,.0f} KM)"; b_col = "#f0ad4e"
                     else:
                         s_cls = "status-ok"; s_txt = f"🟢 NO PRAZO ({restante:,.0f} KM)"; b_col = "#5cb85c"
@@ -412,3 +412,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
