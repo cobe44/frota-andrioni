@@ -331,43 +331,88 @@ def main():
         else:
             st.info("Banco de dados de manutenções vazio.")
 
-    # ABA 2: NOVO LANÇAMENTO
+    # ABA 2: NOVO LANÇAMENTO (Lógica de Recorrência Adicionada)
+    
     with tab_novo:
         st.subheader("Agendar ou Registrar Manutenção")
         with st.form("form_novo_registro"):
             lista_placas = df_frota['placa'].unique().tolist()
             c1, c2 = st.columns(2)
             sel_placa = c1.selectbox("Placa", lista_placas)
-            sel_servico = c2.selectbox("Serviço", ["Troca de Óleo", "Pneus", "Freios", "Correia", "Filtros", "Suspensão", "Elétrica", "Outros"])
             
-            # Tenta pegar KM atual
+            # Adicione seus serviços aqui
+            lista_servicos = ["Troca de Óleo", "Pneus", "Freios", "Correia", "Filtros", "Suspensão", "Elétrica", "Outros"]
+            sel_servico = c2.selectbox("Serviço", lista_servicos)
+            
+            # Tenta pegar KM atual do veículo selecionado
             km_sugerido = 0.0
             if sel_placa:
                 k = df_frota.loc[df_frota['placa'] == sel_placa, 'odometro']
                 if not k.empty: km_sugerido = float(k.values[0])
             
             c3, c4 = st.columns(2)
-            km_base = c3.number_input("KM Atual (Base)", value=km_sugerido)
-            intervalo = c4.number_input("Intervalo para próxima (KM)", value=10000)
+            # KM Base: Se for algo já realizado, é o KM que estava no painel na hora da manutenção
+            km_base = c3.number_input("KM na data do serviço (Atual)", value=km_sugerido, step=100.0)
+            intervalo = c4.number_input("Intervalo para a próxima (KM)", value=10000.0, step=1000.0)
             
+            # Cálculo visual da próxima
+            proxima_meta = km_base + intervalo
+            st.caption(f"📅 A próxima manutenção será programada para: **{proxima_meta:,.0f} KM**")
+
             c5, c6, c7 = st.columns(3)
-            dt_reg = c5.date_input("Data do registro", datetime.now())
-            valor_prev = c6.number_input("Valor Previsto/Pago", value=0.0)
-            resp = c7.text_input("Responsável")
+            dt_reg = c5.date_input("Data do serviço", datetime.now())
+            valor_prev = c6.number_input("Valor (R$)", value=0.0)
+            resp = c7.text_input("Responsável / Mecânico")
             
             obs = st.text_area("Observações")
-            ja_feito = st.checkbox("Esta manutenção já foi realizada (Arquivar direto)")
+            
+            st.divider()
+            
+            # --- LÓGICA DE RECORRÊNCIA ---
+            col_check1, col_check2 = st.columns(2)
+            ja_feito = col_check1.checkbox("✅ Já realizada (Salvar no Histórico)", value=True)
+            # Este checkbox só aparece/faz sentido se a manutenção já foi feita
+            agendar_prox = col_check2.checkbox("🔄 Criar pendência da próxima automaticamente?", value=True, disabled=not ja_feito)
             
             if st.form_submit_button("💾 Salvar Registro"):
-                dados = {
-                    "placa": sel_placa, "tipo": sel_servico, "km": km_base,
-                    "data": dt_reg, "prox_km": km_base + intervalo,
-                    "valor": valor_prev, "obs": obs, "resp": resp,
-                    "status": "Concluido" if ja_feito else "Agendado"
+                # 1. Salva o registro que você acabou de preencher
+                status_atual = "Concluido" if ja_feito else "Agendado"
+                
+                # Se já foi feito, usamos o KM Base como 'km_realizada'. Se é agendado, deixamos 0 ou vazio.
+                km_realizada_log = km_base if ja_feito else ""
+                
+                dados_originais = {
+                    "placa": sel_placa, 
+                    "tipo": sel_servico, 
+                    "km": km_realizada_log, # KM que foi feito
+                    "data": dt_reg, 
+                    "prox_km": proxima_meta, # A meta dessa manutenção (se for agendada) ou referência
+                    "valor": valor_prev, 
+                    "obs": obs, 
+                    "resp": resp,
+                    "status": status_atual
                 }
-                db.add_log(dados)
-                st.success("Registro salvo com sucesso!")
-                time.sleep(1)
+                db.add_log(dados_originais)
+                
+                # 2. SE estiver marcado "Já feita" E "Agendar próxima", cria o SEGUNDO registro
+                if ja_feito and agendar_prox:
+                    dados_futuros = {
+                        "placa": sel_placa,
+                        "tipo": sel_servico,
+                        "km": "", # Ainda não foi realizada
+                        "data": "", # Data futura indefinida
+                        "prox_km": proxima_meta, # A meta é o cálculo feito acima (Base + Intervalo)
+                        "valor": 0, # Valor futuro desconhecido
+                        "obs": "Agendamento automático gerado após baixa.",
+                        "resp": "",
+                        "status": "Agendado"
+                    }
+                    db.add_log(dados_futuros)
+                    st.toast("Foram criados 2 registros: Histórico + Próxima Pendência.")
+                else:
+                    st.toast("Registro salvo.")
+
+                time.sleep(1.5)
                 st.rerun()
 
     # ABA 3: HISTÓRICO
@@ -380,3 +425,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
