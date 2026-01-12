@@ -131,8 +131,11 @@ class FleetDatabase:
         except: return pd.DataFrame()
 
     def sync_sascar_data(self, sascar_service: SascarService):
+        """ Sincroniza e LIMPA a base mantendo apenas o registro mais recente por placa """
         status_msg = st.empty()
-        status_msg.info("⏳ Sincronizando...")
+        status_msg.info("⏳ Sincronizando e otimizando base...")
+        
+        # 1. Veículos
         veiculos_api = sascar_service.get_vehicles()
         if veiculos_api:
             sh = self._get_connection()
@@ -141,23 +144,63 @@ class FleetDatabase:
             ws.append_row(["id_veiculo", "placa"])
             ws.append_rows(veiculos_api)
         
+        # 2. Posições
         pos_api = sascar_service.get_positions(qtd=500)
+        
+        # Mesmo se a API não trouxer nada novo, podemos rodar a limpeza se quiser, 
+        # mas aqui vamos rodar apenas se houver sucesso na API para garantir dados frescos.
         if pos_api:
             df_v = self.get_dataframe("vehicles")
-            map_placa = dict(zip(df_v['id_veiculo'].astype(str), df_v['placa']))
+            # Cria mapa ID -> Placa
+            map_placa = {}
+            if not df_v.empty:
+                map_placa = dict(zip(df_v['id_veiculo'].astype(str), df_v['placa']))
+            
             novos_dados = []
             for p in pos_api:
                 placa = map_placa.get(str(p['id_veiculo']), "Desconhecido")
                 novos_dados.append([
                     p['id_pacote'], p['id_veiculo'], placa, p['timestamp'], p['odometro']
                 ])
+            
             sh = self._get_connection()
             ws_pos = sh.worksheet("positions")
-            ws_pos.append_rows(novos_dados)
-            status_msg.success(f"✅ {len(novos_dados)} novas posições.")
+            
+            # --- LÓGICA DE LIMPEZA AUTOMÁTICA ---
+            # 1. Pega dados atuais da planilha
+            dados_existentes = ws_pos.get_all_records()
+            colunas = ["id_pacote", "id_veiculo", "placa", "timestamp", "odometro"]
+            
+            df_antigo = pd.DataFrame(dados_existentes)
+            df_novo = pd.DataFrame(novos_dados, columns=colunas)
+            
+            # 2. Junta tudo
+            df_total = pd.concat([df_antigo, df_novo])
+            
+            if not df_total.empty:
+                # 3. Garante formato de data para ordenar
+                df_total['timestamp'] = pd.to_datetime(df_total['timestamp'], errors='coerce')
+                
+                # 4. Ordena e mantem apenas a ULTIMA ocorrencia de cada PLACA
+                # Isso impede que a planilha cresça infinitamente
+                df_limpo = df_total.sort_values('timestamp').drop_duplicates(subset=['placa'], keep='last')
+                
+                # 5. Formata data de volta para string para salvar no Sheets
+                df_limpo['timestamp'] = df_limpo['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S')
+                
+                # 6. Sobrescreve a aba inteira
+                ws_pos.clear()
+                ws_pos.append_row(colunas)
+                ws_pos.append_rows(df_limpo.values.tolist())
+                
+                status_msg.success(f"✅ Sincronizado! Base otimizada para {len(df_limpo)} veículos.")
+            else:
+                status_msg.warning("⚠️ Dados vazios após processamento.")
+                
             time.sleep(2); status_msg.empty()
             return True
-        status_msg.warning("⚠️ Nada novo."); time.sleep(2); status_msg.empty()
+            
+        status_msg.warning("⚠️ Sascar não retornou novas posições."); time.sleep(2); status_msg.empty()
         return False
 
     def add_log(self, data_dict):
@@ -288,12 +331,14 @@ def main():
                     meta_km = float(row['proxima_km']) if row['proxima_km'] != '' else 0
                     restante = meta_km - km_atual
                     
+                    # --- CONFIGURAÇÃO DE ALERTAS (MODIFICADO) ---
                     if restante < 0:
                         s_cls = "status-vencido"; s_txt = f"🚨 VENCIDO ({abs(restante):,.0f} KM)"; b_col = "#d9534f"
-                    elif restante < 3000:
+                    elif restante < 3000: # <--- AGORA É 3.000 KM
                         s_cls = "status-atencao"; s_txt = f"⚠️ ATENÇÃO ({restante:,.0f} KM)"; b_col = "#f0ad4e"
                     else:
                         s_cls = "status-ok"; s_txt = f"🟢 NO PRAZO ({restante:,.0f} KM)"; b_col = "#5cb85c"
+                    # -------------------------------------------
 
                     with st.container():
                         st.markdown(f"""
@@ -412,4 +457,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
