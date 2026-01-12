@@ -18,8 +18,6 @@ st.set_page_config(
 st.markdown("""
 <style>
     .stApp { background-color: #f8f9fa; }
-    
-    /* Card de Status */
     .status-card { 
         padding: 12px 15px; 
         border-radius: 8px; 
@@ -28,16 +26,11 @@ st.markdown("""
         margin-bottom: 8px; 
         box-shadow: 0 2px 4px rgba(0,0,0,0.05);
     }
-    
-    /* Tipografia dos Status */
     .status-vencido { color: #d9534f; font-weight: 700; text-transform: uppercase; font-size: 0.9rem; }
     .status-atencao { color: #f0ad4e; font-weight: 700; text-transform: uppercase; font-size: 0.9rem; }
     .status-ok { color: #5cb85c; font-weight: 700; text-transform: uppercase; font-size: 0.9rem; }
-    
     .placa-title { font-size: 1.1rem; font-weight: 700; color: #333; }
     .meta-info { color: #666; font-size: 0.85rem; margin-top: 4px; }
-    
-    /* Remove padding excessivo do topo */
     .block-container { padding-top: 2rem; }
 </style>
 """, unsafe_allow_html=True)
@@ -60,7 +53,7 @@ class SascarService:
                {body_params}
            </web:{method}></soapenv:Body></soapenv:Envelope>"""
         try:
-            r = requests.post(self.url, data=envelope, headers=self.headers, timeout=45)
+            r = requests.post(self.url, data=envelope, headers=self.headers, timeout=20) # Timeout curto pois é por veículo
             return r.status_code, r.content
         except Exception as e:
             return 0, str(e)
@@ -75,42 +68,42 @@ class SascarService:
                 if item.tag.endswith('return'):
                     d = {child.tag.split('}')[-1]: child.text for child in item}
                     if 'idVeiculo' in d and 'placa' in d:
-                        veiculos.append([d['idVeiculo'], d['placa']])
+                        veiculos.append({'id': d['idVeiculo'], 'placa': d['placa']})
             return veiculos
         except: return []
 
-    def get_positions(self, qtd=1000):
-        code, xml = self._send_soap("obterPacotePosicoes", f"<quantidade>{qtd}</quantidade>")
-        if code != 200: return []
-        posicoes = []
+    # --- NOVO MÉTODO: OBTEM DIRETO O STATUS ATUAL (SEM FILA) ---
+    def get_last_position_direct(self, id_veiculo):
+        # Usa o método obterUltimaPosicao documentado no manual
+        code, xml = self._send_soap("obterUltimaPosicao", f"<idVeiculo>{id_veiculo}</idVeiculo>")
+        if code != 200: return None
+        
         try:
             root = ET.fromstring(xml)
+            # Navega até o retorno
             for item in root.iter():
                 if item.tag.endswith('return'):
                     d = {child.tag.split('}')[-1]: child.text for child in item}
-                    if 'idPacote' in d and 'idVeiculo' in d:
-                        # --- CORREÇÃO DE DATA E FUSO HORÁRIO (-3h) ---
-                        raw_date = d.get('dataPosicao', '')
-                        ts = ""
-                        if raw_date:
-                            try:
-                                clean_date = raw_date.split('.')[0]
-                                dt_obj = datetime.strptime(clean_date, "%Y-%m-%dT%H:%M:%S")
-                                dt_obj = dt_obj - timedelta(hours=3)
-                                ts = dt_obj.strftime("%Y-%m-%d %H:%M:%S")
-                            except:
-                                ts = raw_date.replace('T', ' ')
-                        # ---------------------------------------------
-
-                        odo = float(d.get('odometro', 0))
-                        posicoes.append({
-                            'id_pacote': d['idPacote'],
-                            'id_veiculo': d['idVeiculo'],
-                            'timestamp': ts,
-                            'odometro': odo
-                        })
-            return posicoes
-        except: return []
+                    
+                    # Tratamento de Data
+                    raw_date = d.get('dataPosicao', '')
+                    ts = ""
+                    if raw_date:
+                        try:
+                            clean_date = raw_date.split('.')[0]
+                            dt_obj = datetime.strptime(clean_date, "%Y-%m-%dT%H:%M:%S")
+                            dt_obj = dt_obj - timedelta(hours=3) # Fuso Brasil
+                            ts = dt_obj.strftime("%Y-%m-%d %H:%M:%S")
+                        except:
+                            ts = raw_date.replace('T', ' ')
+                    
+                    return {
+                        'id_veiculo': id_veiculo,
+                        'timestamp': ts,
+                        'odometro': float(d.get('odometro', 0))
+                    }
+        except: pass
+        return None
 
 class FleetDatabase:
     def __init__(self, sheet_name="frota_db"):
@@ -141,85 +134,84 @@ class FleetDatabase:
             return df
         except: return pd.DataFrame()
     
-    # --- AJUSTADO: LÊ COLUNA B (ÍNDICE 2) ---
     def get_services_list(self):
         defaults = ["Troca de Óleo", "Pneus", "Freios", "Correia", "Filtros", "Suspensão", "Elétrica", "Outros"]
         sh = self._get_connection()
         if not sh: return defaults
         try:
             ws = sh.worksheet("service_types")
-            # Agora lê a COLUNA 2 (B) onde estão os nomes
             vals = ws.col_values(2) 
-            if len(vals) > 1:
-                return vals[1:] # Pula o cabeçalho
+            if len(vals) > 1: return vals[1:]
             return defaults
-        except:
-            return defaults
-    # ----------------------------------------
+        except: return defaults
 
     def sync_sascar_data(self, sascar_service: SascarService):
+        """ Nova estratégia: Consulta veículo por veículo para pegar o KM ATUAL """
         status_msg = st.empty()
-        status_msg.info("⏳ Iniciando varredura completa da Sascar...")
+        status_msg.info("⏳ Obtendo lista de veículos...")
         
-        veiculos_api = sascar_service.get_vehicles()
-        if veiculos_api:
-            sh = self._get_connection()
-            ws = sh.worksheet("vehicles")
-            ws.clear()
-            ws.append_row(["id_veiculo", "placa"])
-            ws.append_rows(veiculos_api)
+        # 1. Pega lista de Veículos
+        lista_veiculos = sascar_service.get_vehicles()
         
-        todas_novas_posicoes = []
-        ciclo = 0
-        while True:
-            ciclo += 1
-            status_msg.info(f"⏳ Baixando pacote #{ciclo}... (Esvaziando fila)")
-            lote = sascar_service.get_positions(qtd=1000)
-            if not lote: break
-            todas_novas_posicoes.extend(lote)
-            if len(lote) < 1000: break
-            if ciclo > 25: break
+        if not lista_veiculos:
+            status_msg.error("❌ Falha ao obter veículos ou frota vazia.")
+            time.sleep(2)
+            return False
 
-        if todas_novas_posicoes:
-            df_v = self.get_dataframe("vehicles")
-            map_placa = {}
-            if not df_v.empty:
-                map_placa = dict(zip(df_v['id_veiculo'].astype(str), df_v['placa']))
+        # Atualiza tabela de veículos no Sheets
+        sh = self._get_connection()
+        ws_v = sh.worksheet("vehicles")
+        ws_v.clear()
+        ws_v.append_row(["id_veiculo", "placa"])
+        # Prepara dados para salvar
+        rows_v = [[v['id'], v['placa']] for v in lista_veiculos]
+        ws_v.append_rows(rows_v)
+        
+        # 2. Varredura Ponto a Ponto (Ignora Fila)
+        total_v = len(lista_veiculos)
+        progresso = st.progress(0)
+        
+        novas_posicoes = []
+        
+        for i, veiculo in enumerate(lista_veiculos):
+            placa = veiculo['placa']
+            vid = veiculo['id']
+            status_msg.info(f"📡 Consultando: {placa} ({i+1}/{total_v})")
             
-            dados_formatados = []
-            for p in todas_novas_posicoes:
-                placa = map_placa.get(str(p['id_veiculo']), "Desconhecido")
-                dados_formatados.append([
-                    p['id_pacote'], p['id_veiculo'], placa, p['timestamp'], p['odometro']
+            # Chama o método direto (sem fila)
+            dado = sascar_service.get_last_position_direct(vid)
+            
+            if dado:
+                novas_posicoes.append([
+                    "ULTIMO_STATUS", # ID Pacote fictício pois é status real time
+                    vid, 
+                    placa, 
+                    dado['timestamp'], 
+                    dado['odometro']
                 ])
             
-            sh = self._get_connection()
-            ws_pos = sh.worksheet("positions")
+            # Atualiza barra de progresso
+            progresso.progress((i + 1) / total_v)
             
-            dados_existentes = ws_pos.get_all_records()
+        status_msg.info("💾 Salvando dados...")
+        progresso.empty()
+
+        if novas_posicoes:
+            ws_pos = sh.worksheet("positions")
             colunas = ["id_pacote", "id_veiculo", "placa", "timestamp", "odometro"]
             
-            df_antigo = pd.DataFrame(dados_existentes)
-            df_novo = pd.DataFrame(dados_formatados, columns=colunas)
-            df_total = pd.concat([df_antigo, df_novo])
+            # Sobrescreve TUDO com o status atual (MUITO MAIS LEVE)
+            ws_pos.clear()
+            ws_pos.append_row(colunas)
+            ws_pos.append_rows(novas_posicoes)
             
-            if not df_total.empty:
-                df_total['timestamp'] = pd.to_datetime(df_total['timestamp'], errors='coerce')
-                df_limpo = df_total.sort_values('timestamp').drop_duplicates(subset=['placa'], keep='last')
-                df_limpo['timestamp'] = df_limpo['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S')
-                
-                ws_pos.clear()
-                ws_pos.append_row(colunas)
-                ws_pos.append_rows(df_limpo.values.tolist())
-                
-                status_msg.success(f"✅ Atualizado! Processados {len(todas_novas_posicoes)} itens da fila.")
-            else:
-                status_msg.warning("⚠️ Dados vazios.")
+            status_msg.success(f"✅ Sincronizado! {len(novas_posicoes)} veículos atualizados com sucesso.")
+            time.sleep(2); status_msg.empty()
+            return True
         else:
-            status_msg.success("✅ Sistema já estava 100% atualizado.")
-            
-        time.sleep(2); status_msg.empty()
-        return True
+            status_msg.warning("⚠️ Não foi possível obter posições.")
+            time.sleep(2); status_msg.empty()
+            return False
 
     def add_log(self, data_dict):
         sh = self._get_connection()
@@ -284,7 +276,6 @@ def main():
     
     if 'last_sync' not in st.session_state: st.session_state.last_sync = None
     
-    # Carrega a lista da COLUNA B
     lista_servicos_db = db.get_services_list()
 
     # --- SIDEBAR ---
@@ -375,7 +366,6 @@ def main():
                             with st.form(key=f"ed_{row['id']}"):
                                 e_placa = st.selectbox("Placa", df_frota['placa'].unique(), index=df_frota['placa'].tolist().index(row['placa']) if row['placa'] in df_frota['placa'].tolist() else 0)
                                 
-                                # Edição com lista dinâmica
                                 idx_serv = 0
                                 if row['tipo_servico'] in lista_servicos_db:
                                     idx_serv = lista_servicos_db.index(row['tipo_servico'])
