@@ -14,27 +14,35 @@ st.set_page_config(
     page_icon="🚛"
 )
 
-# --- 2. CSS PARA UI MELHORADA ---
+# --- 2. CSS "LISO" E LIMPO ---
 st.markdown("""
 <style>
     .stApp { background-color: #f8f9fa; }
-    .status-card { padding: 15px; border-radius: 8px; border: 1px solid #ddd; background: white; margin-bottom: 10px; }
-    .status-vencido { color: #d9534f; font-weight: bold; }
-    .status-atencao { color: #f0ad4e; font-weight: bold; }
-    .status-ok { color: #5cb85c; font-weight: bold; }
-    .big-number { font-size: 1.2rem; font-weight: bold; }
-    /* Ajuste para o menu de navegação parecer abas */
-    div[role="radiogroup"] > label {
-        padding: 10px 20px;
-        background: #ffffff;
-        border: 1px solid #ddd;
-        border-radius: 5px;
-        margin-right: 10px;
+    
+    /* Card de Status */
+    .status-card { 
+        padding: 12px 15px; 
+        border-radius: 8px; 
+        border: 1px solid #e0e0e0; 
+        background: white; 
+        margin-bottom: 8px; 
+        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
     }
+    
+    /* Tipografia dos Status */
+    .status-vencido { color: #d9534f; font-weight: 700; text-transform: uppercase; font-size: 0.9rem; }
+    .status-atencao { color: #f0ad4e; font-weight: 700; text-transform: uppercase; font-size: 0.9rem; }
+    .status-ok { color: #5cb85c; font-weight: 700; text-transform: uppercase; font-size: 0.9rem; }
+    
+    .placa-title { font-size: 1.1rem; font-weight: 700; color: #333; }
+    .meta-info { color: #666; font-size: 0.85rem; margin-top: 4px; }
+    
+    /* Remove padding excessivo do topo */
+    .block-container { padding-top: 2rem; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- 3. CLASSE DE SERVIÇO SASCAR (API) ---
+# --- 3. SERVIÇOS (SASCAR & DATABASE) ---
 class SascarService:
     def __init__(self, user, password):
         self.user = user
@@ -92,12 +100,10 @@ class SascarService:
             return posicoes
         except: return []
 
-# --- 4. CLASSE DE BANCO DE DADOS (GOOGLE SHEETS) ---
 class FleetDatabase:
     def __init__(self, sheet_name="frota_db"):
         self.sheet_name = sheet_name
-        # Ordem exata das colunas na planilha:
-        # A=id, B=placa, C=tipo, D=km_real, E=data_real, F=prox_km, G=responsavel, H=valor, I=obs, J=status
+        # Ordem exata: A=id, B=placa, C=tipo, D=km_real, E=data, F=prox, G=resp, H=valor, I=obs, J=status
         self.log_cols = ["id", "placa", "tipo_servico", "km_realizada", "data_realizada", "proxima_km", "responsavel", "valor", "obs", "status"]
 
     @st.cache_resource
@@ -107,7 +113,7 @@ class FleetDatabase:
             gc = gspread.service_account_from_dict(creds)
             return gc.open(_self.sheet_name)
         except Exception as e:
-            st.error(f"Erro crítico ao conectar no Google Sheets: {e}")
+            st.error(f"Erro conexão Sheets: {e}")
             return None
 
     def get_dataframe(self, worksheet_name):
@@ -126,7 +132,7 @@ class FleetDatabase:
 
     def sync_sascar_data(self, sascar_service: SascarService):
         status_msg = st.empty()
-        status_msg.info("⏳ Iniciando sincronização com Sascar...")
+        status_msg.info("⏳ Sincronizando...")
         veiculos_api = sascar_service.get_vehicles()
         if veiculos_api:
             sh = self._get_connection()
@@ -148,11 +154,10 @@ class FleetDatabase:
             sh = self._get_connection()
             ws_pos = sh.worksheet("positions")
             ws_pos.append_rows(novos_dados)
-            status_msg.success(f"✅ Sincronizado! {len(novos_dados)} novas posições.")
-            time.sleep(2)
-            status_msg.empty()
+            status_msg.success(f"✅ {len(novos_dados)} novas posições.")
+            time.sleep(2); status_msg.empty()
             return True
-        status_msg.warning("⚠️ Nenhuma posição nova encontrada.")
+        status_msg.warning("⚠️ Nada novo."); time.sleep(2); status_msg.empty()
         return False
 
     def add_log(self, data_dict):
@@ -171,7 +176,7 @@ class FleetDatabase:
             data_dict['km'],
             str(data_dict['data']), 
             data_dict['prox_km'], 
-            data_dict['resp'],   # Coluna G (Responsavel)
+            data_dict['resp'],   # Coluna G
             data_dict['valor'], 
             data_dict['obs'], 
             data_dict['status']
@@ -184,15 +189,13 @@ class FleetDatabase:
         try:
             cell = ws.find(str(log_id), in_column=1)
             if cell:
-                # Indices: A=1, E=5(Data), H=8(Valor), I=9(Obs), J=10(Status)
                 ws.update_cell(cell.row, 5, str(data_real))
                 ws.update_cell(cell.row, 8, valor_final)
                 old_obs = ws.cell(cell.row, 9).value
                 new_obs = f"{old_obs} | Baixa: {obs_final}" if old_obs else obs_final
                 ws.update_cell(cell.row, 9, new_obs)
                 ws.update_cell(cell.row, 10, "Concluido")
-        except Exception as e:
-            st.error(f"Erro ao atualizar: {e}")
+        except: pass
 
     def delete_log(self, log_id):
         sh = self._get_connection()
@@ -211,7 +214,6 @@ class FleetDatabase:
             cell = ws.find(str(log_id), in_column=1)
             if cell:
                 r = cell.row
-                # Indices: B=2(Placa), C=3(Tipo), D=4(KmReal), F=6(Prox), G=7(Resp), H=8(Valor), I=9(Obs)
                 ws.update_cell(r, 2, novos_dados['placa'])
                 ws.update_cell(r, 3, novos_dados['tipo'])
                 ws.update_cell(r, 4, novos_dados['km'])
@@ -220,42 +222,39 @@ class FleetDatabase:
                 ws.update_cell(r, 8, novos_dados['valor'])
                 ws.update_cell(r, 9, novos_dados['obs'])
                 return True
-        except Exception as e:
-            st.error(f"Erro edit: {e}")
-            return False
+        except: return False
 
-# --- 5. APLICAÇÃO PRINCIPAL ---
+# --- 4. APP PRINCIPAL ---
 def main():
     db = FleetDatabase()
     
-    # Inicializa estado de navegação e sincronia
+    # Session State
     if 'last_sync' not in st.session_state: st.session_state.last_sync = None
-    if 'navegacao' not in st.session_state: st.session_state.navegacao = "Pendências"
     
     # --- SIDEBAR ---
     with st.sidebar:
-        st.header("⚙️ Configurações")
+        st.header("Gestão de Frota")
         default_user = st.secrets.get("sascar", {}).get("user", "")
         default_pass = st.secrets.get("sascar", {}).get("password", "")
-        with st.expander("Credenciais Sascar", expanded=not default_user):
+        with st.expander("🔐 Sascar", expanded=not default_user):
             sascar_user = st.text_input("Usuário", value=default_user)
             sascar_pass = st.text_input("Senha", type="password", value=default_pass)
         
-        if st.button("🔄 Sincronizar Agora"):
+        if st.button("🔄 Sincronizar Agora", use_container_width=True):
             if sascar_user and sascar_pass:
                 svc = SascarService(sascar_user, sascar_pass)
                 if db.sync_sascar_data(svc):
                     st.session_state.last_sync = datetime.now()
                     st.rerun()
 
-    st.title("🚛 Gestão de Frota")
+    st.title("🚛 Painel de Controle")
 
-    # Load Data
+    # Carrega Dados
     df_v = db.get_dataframe("vehicles")
     df_pos = db.get_dataframe("positions")
     df_logs = db.get_dataframe("maintenance_logs")
 
-    # Processamento Frota (para cards e calculos)
+    # Cruza dados para obter KM atual
     if not df_pos.empty:
         df_pos['timestamp'] = pd.to_datetime(df_pos['timestamp'], errors='coerce')
         df_pos['odometro'] = pd.to_numeric(df_pos['odometro'], errors='coerce')
@@ -263,7 +262,7 @@ def main():
         if not df_v.empty:
             df_v['id_veiculo'] = df_v['id_veiculo'].astype(str)
             last_pos['id_veiculo'] = last_pos['id_veiculo'].astype(str)
-            df_frota = pd.merge(df_v, last_pos[['id_veiculo', 'odometro', 'timestamp']], on='id_veiculo', how='left')
+            df_frota = pd.merge(df_v, last_pos[['id_veiculo', 'odometro']], on='id_veiculo', how='left')
             df_frota['odometro'] = df_frota['odometro'].fillna(0)
         else:
             df_frota = pd.DataFrame(columns=['placa', 'odometro'])
@@ -271,27 +270,15 @@ def main():
         df_frota = df_v.copy() if not df_v.empty else pd.DataFrame(columns=['placa'])
         df_frota['odometro'] = 0
 
-    # --- NAVEGAÇÃO SUPERIOR (Substituindo Tabs por Radio para controle total) ---
-    # Isso permite que a gente mude de tela via código (ao salvar)
-    menu_options = ["Pendências", "Novo Lançamento", "Histórico"]
-    st.session_state.navegacao = st.radio(
-        "", 
-        menu_options, 
-        index=menu_options.index(st.session_state.navegacao),
-        horizontal=True,
-        label_visibility="collapsed",
-        key="nav_radio"
-    )
+    # --- ABAS (LAYOUT ORIGINAL) ---
+    tab_pend, tab_novo, tab_hist = st.tabs(["🚦 Pendências", "➕ Novo Lançamento", "📚 Histórico"])
 
-    st.divider()
-
-    # --- TELA 1: PENDÊNCIAS ---
-    if st.session_state.navegacao == "Pendências":
+    # --- ABA 1: PENDÊNCIAS ---
+    with tab_pend:
         if not df_logs.empty and 'status' in df_logs.columns:
             pendentes = df_logs[df_logs['status'] != 'Concluido'].copy()
             if not pendentes.empty:
                 km_map = dict(zip(df_frota['placa'], df_frota['odometro']))
-                
                 pendentes['km_restante'] = pd.to_numeric(pendentes['proxima_km'], errors='coerce') - pendentes['placa'].map(km_map).fillna(0)
                 pendentes = pendentes.sort_values('km_restante')
 
@@ -302,133 +289,126 @@ def main():
                     restante = meta_km - km_atual
                     
                     if restante < 0:
-                        status_cls = "status-vencido"; status_txt = f"🚨 VENCIDO ({abs(restante):,.0f} KM)"; border_color = "#d9534f"
+                        s_cls = "status-vencido"; s_txt = f"🚨 VENCIDO ({abs(restante):,.0f} KM)"; b_col = "#d9534f"
                     elif restante < 1000:
-                        status_cls = "status-atencao"; status_txt = f"⚠️ ATENÇÃO ({restante:,.0f} KM)"; border_color = "#f0ad4e"
+                        s_cls = "status-atencao"; s_txt = f"⚠️ ATENÇÃO ({restante:,.0f} KM)"; b_col = "#f0ad4e"
                     else:
-                        status_cls = "status-ok"; status_txt = f"🟢 NO PRAZO ({restante:,.0f} KM)"; border_color = "#5cb85c"
+                        s_cls = "status-ok"; s_txt = f"🟢 NO PRAZO ({restante:,.0f} KM)"; b_col = "#5cb85c"
 
                     with st.container():
                         st.markdown(f"""
-                        <div class="status-card" style="border-left: 5px solid {border_color}">
-                            <div style="display:flex; justify-content:space-between;">
-                                <span class="big-number">{placa}</span>
-                                <span class="{status_cls}">{status_txt}</span>
+                        <div class="status-card" style="border-left: 5px solid {b_col}">
+                            <div style="display:flex; justify-content:space-between; align-items:center;">
+                                <span class="placa-title">{placa}</span>
+                                <span class="{s_cls}">{s_txt}</span>
                             </div>
-                            <div><b>{row['tipo_servico']}</b> | Resp: {row['responsavel']}</div>
-                            <div style="color: #666; font-size: 0.9em">Meta: {meta_km:,.0f} km | Atual: {km_atual:,.0f} km</div>
+                            <div><b>{row['tipo_servico']}</b> <span style="color:#888">| Resp: {row['responsavel']}</span></div>
+                            <div class="meta-info">Meta: {meta_km:,.0f} km | Atual: {km_atual:,.0f} km</div>
                         </div>
                         """, unsafe_allow_html=True)
                         
-                        c_baixa, c_edit, c_del = st.columns([2, 2, 1])
+                        # Ações
+                        c1, c2, c3 = st.columns([2, 2, 0.5])
                         
-                        # BAIXA
-                        with c_baixa.expander("✅ Baixar"):
+                        # Baixar
+                        with c1.expander("✅ Baixar O.S."):
                             with st.form(key=f"bx_{row['id']}"):
-                                dt_bx = st.date_input("Data", datetime.now())
-                                vl_bx = st.number_input("Valor Final R$", value=float(row['valor']) if row['valor'] else 0.0)
-                                obs_bx = st.text_input("Obs Fechamento")
+                                dt_bx = st.date_input("Data Real", datetime.now())
+                                vl_bx = st.number_input("Valor R$", value=float(row['valor']) if row['valor'] else 0.0)
+                                obs_bx = st.text_input("Obs")
                                 if st.form_submit_button("Concluir"):
                                     db.update_log_status(row['id'], dt_bx, vl_bx, obs_bx)
-                                    st.success("Baixado!"); time.sleep(1); st.rerun()
+                                    st.success("Ok!"); time.sleep(0.5); st.rerun()
 
-                        # EDITAR
-                        with c_edit.expander("✏️ Editar"):
+                        # Editar
+                        with c2.expander("✏️ Editar"):
                             with st.form(key=f"ed_{row['id']}"):
-                                ed_tipo = st.text_input("Serviço", value=row['tipo_servico'])
-                                ed_resp = st.text_input("Responsável", value=row['responsavel'])
-                                ed_km_base = st.number_input("KM Base", value=float(row['km_realizada']) if row['km_realizada'] else 0.0)
-                                ed_prox = st.number_input("Próxima KM (Meta)", value=float(row['proxima_km']) if row['proxima_km'] else 0.0)
-                                ed_valor = st.number_input("Valor Prev.", value=float(row['valor']) if row['valor'] else 0.0)
-                                ed_obs = st.text_area("Obs", value=row['obs'])
-                                if st.form_submit_button("Salvar Edição"):
-                                    novos = {'placa': row['placa'], 'tipo': ed_tipo, 'resp': ed_resp, 
-                                             'km': ed_km_base, 'prox_km': ed_prox, 'valor': ed_valor, 'obs': ed_obs}
-                                    if db.edit_log_full(row['id'], novos):
-                                        st.success("Editado!"); time.sleep(1); st.rerun()
+                                e_placa = st.selectbox("Placa", df_frota['placa'].unique(), index=df_frota['placa'].tolist().index(row['placa']) if row['placa'] in df_frota['placa'].tolist() else 0)
+                                e_tipo = st.text_input("Serviço", value=row['tipo_servico'])
+                                e_resp = st.text_input("Resp", value=row['responsavel'])
+                                e_km = st.number_input("KM Base", value=float(row['km_realizada']) if row['km_realizada'] else 0.0)
+                                e_prox = st.number_input("Meta KM", value=float(row['proxima_km']) if row['proxima_km'] else 0.0)
+                                e_val = st.number_input("Valor", value=float(row['valor']) if row['valor'] else 0.0)
+                                e_obs = st.text_area("Obs", value=row['obs'])
+                                if st.form_submit_button("Salvar"):
+                                    novos = {'placa':e_placa, 'tipo':e_tipo, 'resp':e_resp, 'km':e_km, 'prox_km':e_prox, 'valor':e_val, 'obs':e_obs}
+                                    db.edit_log_full(row['id'], novos)
+                                    st.rerun()
 
-                        # EXCLUIR
-                        if c_del.button("🗑️", key=f"del_{row['id']}", help="Excluir item"):
-                            if db.delete_log(row['id']):
-                                st.toast("Item excluído!"); time.sleep(1); st.rerun()
+                        # Excluir
+                        if c3.button("🗑️", key=f"del_{row['id']}", help="Excluir"):
+                            db.delete_log(row['id']); st.rerun()
             else:
-                st.info("Nenhuma manutenção pendente.")
+                st.info("Nenhuma pendência.")
 
-    # --- TELA 2: NOVO LANÇAMENTO ---
-    elif st.session_state.navegacao == "Novo Lançamento":
+    # --- ABA 2: NOVO LANÇAMENTO ---
+    with tab_novo:
         st.subheader("Registrar Manutenção")
         
-        # Lista de chaves para limpar após o submit
-        keys_to_clear = ["n_placa", "n_serv", "n_km", "n_inter", "n_dt", "n_val", "n_resp", "n_obs", "n_done", "n_agendar"]
+        # Keys para limpeza
+        keys_clear = ["n_placa", "n_serv", "n_km", "n_inter", "n_dt", "n_val", "n_resp", "n_obs", "n_done", "n_agendar"]
 
-        with st.form("form_novo_registro", clear_on_submit=False):
-            lista_placas = df_frota['placa'].unique().tolist()
+        with st.form("form_novo", clear_on_submit=False):
+            l_placas = df_frota['placa'].unique().tolist()
             c1, c2 = st.columns(2)
-            sel_placa = c1.selectbox("Placa", lista_placas, key="n_placa")
+            sel_placa = c1.selectbox("Placa", l_placas, key="n_placa")
             sel_servico = c2.selectbox("Serviço", ["Troca de Óleo", "Pneus", "Freios", "Correia", "Filtros", "Suspensão", "Elétrica", "Outros"], key="n_serv")
             
             c3, c4 = st.columns(2)
-            # KM BASE AGORA VEM ZERADO (0.0) PARA PREENCHIMENTO MANUAL
             km_base = c3.number_input("KM na data do serviço (Manual)", value=0.0, step=100.0, key="n_km")
-            intervalo = c4.number_input("Intervalo para próxima (KM)", value=10000.0, step=1000.0, key="n_inter")
+            intervalo = c4.number_input("Intervalo (KM)", value=10000.0, step=1000.0, key="n_inter")
             
-            proxima_meta = km_base + intervalo
-            st.caption(f"📅 Próxima manutenção programada para: **{proxima_meta:,.0f} KM**")
+            prox_calc = km_base + intervalo
+            st.caption(f"📅 Próxima prevista: **{prox_calc:,.0f} KM**")
 
             c5, c6, c7 = st.columns(3)
-            dt_reg = c5.date_input("Data do serviço", datetime.now(), key="n_dt")
-            valor_prev = c6.number_input("Valor (R$)", value=0.0, key="n_val")
-            resp = c7.text_input("Responsável / Mecânico", key="n_resp")
-            
-            obs = st.text_area("Observações", key="n_obs")
+            dt_reg = c5.date_input("Data", datetime.now(), key="n_dt")
+            val_reg = c6.number_input("Valor (R$)", value=0.0, key="n_val")
+            resp_reg = c7.text_input("Responsável", key="n_resp")
+            obs_reg = st.text_area("Obs", key="n_obs")
             
             st.divider()
             cc1, cc2 = st.columns(2)
-            ja_feito = cc1.checkbox("✅ Já realizada (Histórico)", value=True, key="n_done")
-            agendar_prox = cc2.checkbox("🔄 Criar próxima pendência?", value=True, key="n_agendar")
+            is_done = cc1.checkbox("✅ Já realizada (Histórico)", value=True, key="n_done")
+            do_sched = cc2.checkbox("🔄 Criar próxima pendência?", value=True, key="n_agendar")
             
             if st.form_submit_button("💾 Salvar Registro"):
-                status_atual = "Concluido" if ja_feito else "Agendado"
-                km_realizada_log = km_base if ja_feito else ""
+                stt = "Concluido" if is_done else "Agendado"
+                km_log = km_base if is_done else ""
                 
-                # 1. Registro Principal
-                dados_originais = {
-                    "placa": sel_placa, "tipo": sel_servico, "km": km_realizada_log,
-                    "data": dt_reg, "prox_km": proxima_meta, "valor": valor_prev, 
-                    "obs": obs, "resp": resp, "status": status_atual
+                # 1. Registro Atual
+                d1 = {
+                    "placa": sel_placa, "tipo": sel_servico, "km": km_log,
+                    "data": dt_reg, "prox_km": prox_calc, "valor": val_reg, 
+                    "obs": obs_reg, "resp": resp_reg, "status": stt
                 }
-                db.add_log(dados_originais)
+                db.add_log(d1)
                 
-                # 2. Registro Recorrente (se marcado)
-                if ja_feito and agendar_prox:
-                    dados_futuros = {
+                # 2. Registro Futuro
+                if is_done and do_sched:
+                    d2 = {
                         "placa": sel_placa, "tipo": sel_servico, "km": "", "data": "",
-                        "prox_km": proxima_meta, "valor": 0, "obs": "Agendamento automático.",
+                        "prox_km": prox_calc, "valor": 0, "obs": "Agendamento automático.",
                         "resp": "", "status": "Agendado"
                     }
-                    db.add_log(dados_futuros)
+                    db.add_log(d2)
                 
-                st.success("Salvo com sucesso!")
+                st.toast("Salvo com sucesso!")
                 
-                # --- LÓGICA DE LIMPEZA E REDIRECIONAMENTO ---
-                # Limpa os campos da session state
-                for key in keys_to_clear:
-                    if key in st.session_state:
-                        del st.session_state[key]
+                # Limpa chaves
+                for k in keys_clear:
+                    if k in st.session_state: del st.session_state[k]
                 
-                # Força a navegação para Pendências
-                st.session_state.navegacao = "Pendências"
-                
-                time.sleep(0.5)
+                time.sleep(1)
                 st.rerun()
 
-    # --- TELA 3: HISTÓRICO ---
-    elif st.session_state.navegacao == "Histórico":
-        if not df_logs.empty and 'status' in df_logs.columns:
-            concluidos = df_logs[df_logs['status'] == 'Concluido'].sort_values('id', ascending=False)
-            st.dataframe(concluidos, use_container_width=True, hide_index=True)
+    # --- ABA 3: HISTÓRICO ---
+    with tab_hist:
+        if not df_logs.empty:
+            h = df_logs[df_logs['status'] == 'Concluido'].sort_values('id', ascending=False)
+            st.dataframe(h, use_container_width=True, hide_index=True)
         else:
-            st.write("Sem histórico.")
+            st.info("Histórico vazio.")
 
 if __name__ == "__main__":
     main()
