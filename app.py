@@ -60,7 +60,7 @@ class SascarService:
                {body_params}
            </web:{method}></soapenv:Body></soapenv:Envelope>"""
         try:
-            r = requests.post(self.url, data=envelope, headers=self.headers, timeout=30)
+            r = requests.post(self.url, data=envelope, headers=self.headers, timeout=45)
             return r.status_code, r.content
         except Exception as e:
             return 0, str(e)
@@ -79,7 +79,7 @@ class SascarService:
             return veiculos
         except: return []
 
-    def get_positions(self, qtd=500):
+    def get_positions(self, qtd=1000):
         code, xml = self._send_soap("obterPacotePosicoes", f"<quantidade>{qtd}</quantidade>")
         if code != 200: return []
         posicoes = []
@@ -89,7 +89,19 @@ class SascarService:
                 if item.tag.endswith('return'):
                     d = {child.tag.split('}')[-1]: child.text for child in item}
                     if 'idPacote' in d and 'idVeiculo' in d:
-                        ts = d.get('dataPosicao', '').split('.')[0].replace('T', ' ')
+                        # --- CORREÇÃO DE DATA E FUSO HORÁRIO (-3h) ---
+                        raw_date = d.get('dataPosicao', '')
+                        ts = ""
+                        if raw_date:
+                            try:
+                                clean_date = raw_date.split('.')[0]
+                                dt_obj = datetime.strptime(clean_date, "%Y-%m-%dT%H:%M:%S")
+                                dt_obj = dt_obj - timedelta(hours=3)
+                                ts = dt_obj.strftime("%Y-%m-%d %H:%M:%S")
+                            except:
+                                ts = raw_date.replace('T', ' ')
+                        # ---------------------------------------------
+
                         odo = float(d.get('odometro', 0))
                         posicoes.append({
                             'id_pacote': d['idPacote'],
@@ -103,7 +115,6 @@ class SascarService:
 class FleetDatabase:
     def __init__(self, sheet_name="frota_db"):
         self.sheet_name = sheet_name
-        # Ordem exata: A=id, B=placa, C=tipo, D=km_real, E=data, F=prox, G=resp, H=valor, I=obs, J=status
         self.log_cols = ["id", "placa", "tipo_servico", "km_realizada", "data_realizada", "proxima_km", "responsavel", "valor", "obs", "status"]
 
     @st.cache_resource
@@ -129,13 +140,27 @@ class FleetDatabase:
                     if col not in df.columns: df[col] = ""
             return df
         except: return pd.DataFrame()
+    
+    # --- AJUSTADO: LÊ COLUNA B (ÍNDICE 2) ---
+    def get_services_list(self):
+        defaults = ["Troca de Óleo", "Pneus", "Freios", "Correia", "Filtros", "Suspensão", "Elétrica", "Outros"]
+        sh = self._get_connection()
+        if not sh: return defaults
+        try:
+            ws = sh.worksheet("service_types")
+            # Agora lê a COLUNA 2 (B) onde estão os nomes
+            vals = ws.col_values(2) 
+            if len(vals) > 1:
+                return vals[1:] # Pula o cabeçalho
+            return defaults
+        except:
+            return defaults
+    # ----------------------------------------
 
     def sync_sascar_data(self, sascar_service: SascarService):
-        """ Sincroniza e LIMPA a base mantendo apenas o registro mais recente por placa """
         status_msg = st.empty()
-        status_msg.info("⏳ Sincronizando e otimizando base...")
+        status_msg.info("⏳ Iniciando varredura completa da Sascar...")
         
-        # 1. Veículos
         veiculos_api = sascar_service.get_vehicles()
         if veiculos_api:
             sh = self._get_connection()
@@ -144,64 +169,57 @@ class FleetDatabase:
             ws.append_row(["id_veiculo", "placa"])
             ws.append_rows(veiculos_api)
         
-        # 2. Posições
-        pos_api = sascar_service.get_positions(qtd=500)
-        
-        # Mesmo se a API não trouxer nada novo, podemos rodar a limpeza se quiser, 
-        # mas aqui vamos rodar apenas se houver sucesso na API para garantir dados frescos.
-        if pos_api:
+        todas_novas_posicoes = []
+        ciclo = 0
+        while True:
+            ciclo += 1
+            status_msg.info(f"⏳ Baixando pacote #{ciclo}... (Esvaziando fila)")
+            lote = sascar_service.get_positions(qtd=1000)
+            if not lote: break
+            todas_novas_posicoes.extend(lote)
+            if len(lote) < 1000: break
+            if ciclo > 25: break
+
+        if todas_novas_posicoes:
             df_v = self.get_dataframe("vehicles")
-            # Cria mapa ID -> Placa
             map_placa = {}
             if not df_v.empty:
                 map_placa = dict(zip(df_v['id_veiculo'].astype(str), df_v['placa']))
             
-            novos_dados = []
-            for p in pos_api:
+            dados_formatados = []
+            for p in todas_novas_posicoes:
                 placa = map_placa.get(str(p['id_veiculo']), "Desconhecido")
-                novos_dados.append([
+                dados_formatados.append([
                     p['id_pacote'], p['id_veiculo'], placa, p['timestamp'], p['odometro']
                 ])
             
             sh = self._get_connection()
             ws_pos = sh.worksheet("positions")
             
-            # --- LÓGICA DE LIMPEZA AUTOMÁTICA ---
-            # 1. Pega dados atuais da planilha
             dados_existentes = ws_pos.get_all_records()
             colunas = ["id_pacote", "id_veiculo", "placa", "timestamp", "odometro"]
             
             df_antigo = pd.DataFrame(dados_existentes)
-            df_novo = pd.DataFrame(novos_dados, columns=colunas)
-            
-            # 2. Junta tudo
+            df_novo = pd.DataFrame(dados_formatados, columns=colunas)
             df_total = pd.concat([df_antigo, df_novo])
             
             if not df_total.empty:
-                # 3. Garante formato de data para ordenar
                 df_total['timestamp'] = pd.to_datetime(df_total['timestamp'], errors='coerce')
-                
-                # 4. Ordena e mantem apenas a ULTIMA ocorrencia de cada PLACA
-                # Isso impede que a planilha cresça infinitamente
                 df_limpo = df_total.sort_values('timestamp').drop_duplicates(subset=['placa'], keep='last')
-                
-                # 5. Formata data de volta para string para salvar no Sheets
                 df_limpo['timestamp'] = df_limpo['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S')
                 
-                # 6. Sobrescreve a aba inteira
                 ws_pos.clear()
                 ws_pos.append_row(colunas)
                 ws_pos.append_rows(df_limpo.values.tolist())
                 
-                status_msg.success(f"✅ Sincronizado! Base otimizada para {len(df_limpo)} veículos.")
+                status_msg.success(f"✅ Atualizado! Processados {len(todas_novas_posicoes)} itens da fila.")
             else:
-                status_msg.warning("⚠️ Dados vazios após processamento.")
-                
-            time.sleep(2); status_msg.empty()
-            return True
+                status_msg.warning("⚠️ Dados vazios.")
+        else:
+            status_msg.success("✅ Sistema já estava 100% atualizado.")
             
-        status_msg.warning("⚠️ Sascar não retornou novas posições."); time.sleep(2); status_msg.empty()
-        return False
+        time.sleep(2); status_msg.empty()
+        return True
 
     def add_log(self, data_dict):
         sh = self._get_connection()
@@ -213,16 +231,9 @@ class FleetDatabase:
             if ids: next_id = max(ids) + 1
             
         row = [
-            next_id, 
-            data_dict['placa'], 
-            data_dict['tipo'], 
-            data_dict['km'],
-            str(data_dict['data']), 
-            data_dict['prox_km'], 
-            data_dict['resp'],   # Coluna G
-            data_dict['valor'], 
-            data_dict['obs'], 
-            data_dict['status']
+            next_id, data_dict['placa'], data_dict['tipo'], data_dict['km'],
+            str(data_dict['data']), data_dict['prox_km'], data_dict['resp'],
+            data_dict['valor'], data_dict['obs'], data_dict['status']
         ]
         ws.append_row(row)
 
@@ -271,9 +282,11 @@ class FleetDatabase:
 def main():
     db = FleetDatabase()
     
-    # Session State
     if 'last_sync' not in st.session_state: st.session_state.last_sync = None
     
+    # Carrega a lista da COLUNA B
+    lista_servicos_db = db.get_services_list()
+
     # --- SIDEBAR ---
     with st.sidebar:
         st.header("Gestão de Frota")
@@ -292,12 +305,10 @@ def main():
 
     st.title("🚛 Painel de Controle")
 
-    # Carrega Dados
     df_v = db.get_dataframe("vehicles")
     df_pos = db.get_dataframe("positions")
     df_logs = db.get_dataframe("maintenance_logs")
 
-    # Cruza dados para obter KM atual
     if not df_pos.empty:
         df_pos['timestamp'] = pd.to_datetime(df_pos['timestamp'], errors='coerce')
         df_pos['odometro'] = pd.to_numeric(df_pos['odometro'], errors='coerce')
@@ -313,7 +324,6 @@ def main():
         df_frota = df_v.copy() if not df_v.empty else pd.DataFrame(columns=['placa'])
         df_frota['odometro'] = 0
 
-    # --- ABAS (LAYOUT ORIGINAL) ---
     tab_pend, tab_novo, tab_hist = st.tabs(["🚦 Pendências", "➕ Novo Lançamento", "📚 Histórico"])
 
     # --- ABA 1: PENDÊNCIAS ---
@@ -331,14 +341,12 @@ def main():
                     meta_km = float(row['proxima_km']) if row['proxima_km'] != '' else 0
                     restante = meta_km - km_atual
                     
-                    # --- CONFIGURAÇÃO DE ALERTAS (MODIFICADO) ---
                     if restante < 0:
                         s_cls = "status-vencido"; s_txt = f"🚨 VENCIDO ({abs(restante):,.0f} KM)"; b_col = "#d9534f"
-                    elif restante < 3000: # <--- AGORA É 3.000 KM
+                    elif restante < 3000:
                         s_cls = "status-atencao"; s_txt = f"⚠️ ATENÇÃO ({restante:,.0f} KM)"; b_col = "#f0ad4e"
                     else:
                         s_cls = "status-ok"; s_txt = f"🟢 NO PRAZO ({restante:,.0f} KM)"; b_col = "#5cb85c"
-                    # -------------------------------------------
 
                     with st.container():
                         st.markdown(f"""
@@ -352,24 +360,27 @@ def main():
                         </div>
                         """, unsafe_allow_html=True)
                         
-                        # Ações
                         c1, c2, c3 = st.columns([2, 2, 0.5])
                         
-                        # Baixar
                         with c1.expander("✅ Baixar O.S."):
                             with st.form(key=f"bx_{row['id']}"):
-                                dt_bx = st.date_input("Data Real", datetime.now())
+                                dt_bx = st.date_input("Data Real", datetime.now() - timedelta(hours=3))
                                 vl_bx = st.number_input("Valor R$", value=float(row['valor']) if row['valor'] else 0.0)
                                 obs_bx = st.text_input("Obs")
                                 if st.form_submit_button("Concluir"):
                                     db.update_log_status(row['id'], dt_bx, vl_bx, obs_bx)
                                     st.success("Ok!"); time.sleep(0.5); st.rerun()
 
-                        # Editar
                         with c2.expander("✏️ Editar"):
                             with st.form(key=f"ed_{row['id']}"):
                                 e_placa = st.selectbox("Placa", df_frota['placa'].unique(), index=df_frota['placa'].tolist().index(row['placa']) if row['placa'] in df_frota['placa'].tolist() else 0)
-                                e_tipo = st.text_input("Serviço", value=row['tipo_servico'])
+                                
+                                # Edição com lista dinâmica
+                                idx_serv = 0
+                                if row['tipo_servico'] in lista_servicos_db:
+                                    idx_serv = lista_servicos_db.index(row['tipo_servico'])
+                                e_tipo = st.selectbox("Serviço", lista_servicos_db, index=idx_serv)
+                                
                                 e_resp = st.text_input("Resp", value=row['responsavel'])
                                 e_km = st.number_input("KM Base", value=float(row['km_realizada']) if row['km_realizada'] else 0.0)
                                 e_prox = st.number_input("Meta KM", value=float(row['proxima_km']) if row['proxima_km'] else 0.0)
@@ -380,7 +391,6 @@ def main():
                                     db.edit_log_full(row['id'], novos)
                                     st.rerun()
 
-                        # Excluir
                         if c3.button("🗑️", key=f"del_{row['id']}", help="Excluir"):
                             db.delete_log(row['id']); st.rerun()
             else:
@@ -390,14 +400,13 @@ def main():
     with tab_novo:
         st.subheader("Registrar Manutenção")
         
-        # Keys para limpeza
         keys_clear = ["n_placa", "n_serv", "n_km", "n_inter", "n_dt", "n_val", "n_resp", "n_obs", "n_done", "n_agendar"]
 
         with st.form("form_novo", clear_on_submit=False):
             l_placas = df_frota['placa'].unique().tolist()
             c1, c2 = st.columns(2)
             sel_placa = c1.selectbox("Placa", l_placas, key="n_placa")
-            sel_servico = c2.selectbox("Serviço", ["Troca de Óleo", "Pneus", "Freios", "Correia", "Filtros", "Suspensão", "Elétrica", "Outros"], key="n_serv")
+            sel_servico = c2.selectbox("Serviço", lista_servicos_db, key="n_serv")
             
             c3, c4 = st.columns(2)
             km_base = c3.number_input("KM na data do serviço (Manual)", value=0.0, step=100.0, key="n_km")
@@ -407,7 +416,7 @@ def main():
             st.caption(f"📅 Próxima prevista: **{prox_calc:,.0f} KM**")
 
             c5, c6, c7 = st.columns(3)
-            dt_reg = c5.date_input("Data", datetime.now(), key="n_dt")
+            dt_reg = c5.date_input("Data", datetime.now() - timedelta(hours=3), key="n_dt")
             val_reg = c6.number_input("Valor (R$)", value=0.0, key="n_val")
             resp_reg = c7.text_input("Responsável", key="n_resp")
             obs_reg = st.text_area("Obs", key="n_obs")
@@ -421,7 +430,6 @@ def main():
                 stt = "Concluido" if is_done else "Agendado"
                 km_log = km_base if is_done else ""
                 
-                # 1. Registro Atual
                 d1 = {
                     "placa": sel_placa, "tipo": sel_servico, "km": km_log,
                     "data": dt_reg, "prox_km": prox_calc, "valor": val_reg, 
@@ -429,7 +437,6 @@ def main():
                 }
                 db.add_log(d1)
                 
-                # 2. Registro Futuro
                 if is_done and do_sched:
                     d2 = {
                         "placa": sel_placa, "tipo": sel_servico, "km": "", "data": "",
@@ -440,7 +447,6 @@ def main():
                 
                 st.toast("Salvo com sucesso!")
                 
-                # Limpa chaves
                 for k in keys_clear:
                     if k in st.session_state: del st.session_state[k]
                 
