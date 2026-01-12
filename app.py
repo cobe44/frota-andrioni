@@ -23,6 +23,14 @@ st.markdown("""
     .status-atencao { color: #f0ad4e; font-weight: bold; }
     .status-ok { color: #5cb85c; font-weight: bold; }
     .big-number { font-size: 1.2rem; font-weight: bold; }
+    /* Ajuste para o menu de navegação parecer abas */
+    div[role="radiogroup"] > label {
+        padding: 10px 20px;
+        background: #ffffff;
+        border: 1px solid #ddd;
+        border-radius: 5px;
+        margin-right: 10px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -111,7 +119,6 @@ class FleetDatabase:
             df = pd.DataFrame(data)
             if worksheet_name == "maintenance_logs":
                 if df.empty: return pd.DataFrame(columns=self.log_cols)
-                # Garante que todas colunas existam no DF para evitar KeyError
                 for col in self.log_cols:
                     if col not in df.columns: df[col] = ""
             return df
@@ -157,8 +164,6 @@ class FleetDatabase:
             ids = [int(x) for x in col_ids[1:] if str(x).isdigit()]
             if ids: next_id = max(ids) + 1
             
-        # --- CORREÇÃO DE ORDEM DAS COLUNAS (G vs K) ---
-        # A ordem aqui deve bater EXATAMENTE com self.log_cols
         row = [
             next_id, 
             data_dict['placa'], 
@@ -166,7 +171,7 @@ class FleetDatabase:
             data_dict['km'],
             str(data_dict['data']), 
             data_dict['prox_km'], 
-            data_dict['resp'],   # <--- Agora na posição correta (Coluna G)
+            data_dict['resp'],   # Coluna G (Responsavel)
             data_dict['valor'], 
             data_dict['obs'], 
             data_dict['status']
@@ -179,8 +184,7 @@ class FleetDatabase:
         try:
             cell = ws.find(str(log_id), in_column=1)
             if cell:
-                # Ajustando indices baseados na nova estrutura
-                # A=1, E=5 (Data), H=8 (Valor), I=9 (Obs), J=10 (Status)
+                # Indices: A=1, E=5(Data), H=8(Valor), I=9(Obs), J=10(Status)
                 ws.update_cell(cell.row, 5, str(data_real))
                 ws.update_cell(cell.row, 8, valor_final)
                 old_obs = ws.cell(cell.row, 9).value
@@ -207,8 +211,7 @@ class FleetDatabase:
             cell = ws.find(str(log_id), in_column=1)
             if cell:
                 r = cell.row
-                # Atualiza células específicas
-                # B=2(Placa), C=3(Tipo), D=4(KmReal/Base), F=6(Prox), G=7(Resp), H=8(Valor), I=9(Obs)
+                # Indices: B=2(Placa), C=3(Tipo), D=4(KmReal), F=6(Prox), G=7(Resp), H=8(Valor), I=9(Obs)
                 ws.update_cell(r, 2, novos_dados['placa'])
                 ws.update_cell(r, 3, novos_dados['tipo'])
                 ws.update_cell(r, 4, novos_dados['km'])
@@ -224,7 +227,10 @@ class FleetDatabase:
 # --- 5. APLICAÇÃO PRINCIPAL ---
 def main():
     db = FleetDatabase()
+    
+    # Inicializa estado de navegação e sincronia
     if 'last_sync' not in st.session_state: st.session_state.last_sync = None
+    if 'navegacao' not in st.session_state: st.session_state.navegacao = "Pendências"
     
     # --- SIDEBAR ---
     with st.sidebar:
@@ -249,7 +255,7 @@ def main():
     df_pos = db.get_dataframe("positions")
     df_logs = db.get_dataframe("maintenance_logs")
 
-    # Processamento Frota
+    # Processamento Frota (para cards e calculos)
     if not df_pos.empty:
         df_pos['timestamp'] = pd.to_datetime(df_pos['timestamp'], errors='coerce')
         df_pos['odometro'] = pd.to_numeric(df_pos['odometro'], errors='coerce')
@@ -265,16 +271,27 @@ def main():
         df_frota = df_v.copy() if not df_v.empty else pd.DataFrame(columns=['placa'])
         df_frota['odometro'] = 0
 
-    tab_pend, tab_novo, tab_hist = st.tabs(["🚦 Pendências", "➕ Novo Lançamento", "📚 Histórico"])
+    # --- NAVEGAÇÃO SUPERIOR (Substituindo Tabs por Radio para controle total) ---
+    # Isso permite que a gente mude de tela via código (ao salvar)
+    menu_options = ["Pendências", "Novo Lançamento", "Histórico"]
+    st.session_state.navegacao = st.radio(
+        "", 
+        menu_options, 
+        index=menu_options.index(st.session_state.navegacao),
+        horizontal=True,
+        label_visibility="collapsed",
+        key="nav_radio"
+    )
 
-    # --- ABA 1: PENDÊNCIAS ---
-    with tab_pend:
+    st.divider()
+
+    # --- TELA 1: PENDÊNCIAS ---
+    if st.session_state.navegacao == "Pendências":
         if not df_logs.empty and 'status' in df_logs.columns:
             pendentes = df_logs[df_logs['status'] != 'Concluido'].copy()
             if not pendentes.empty:
                 km_map = dict(zip(df_frota['placa'], df_frota['odometro']))
                 
-                # Ordenar por urgência (menor km restante primeiro)
                 pendentes['km_restante'] = pd.to_numeric(pendentes['proxima_km'], errors='coerce') - pendentes['placa'].map(km_map).fillna(0)
                 pendentes = pendentes.sort_values('km_restante')
 
@@ -303,10 +320,9 @@ def main():
                         </div>
                         """, unsafe_allow_html=True)
                         
-                        # --- ACTIONS BAR ---
                         c_baixa, c_edit, c_del = st.columns([2, 2, 1])
                         
-                        # 1. BAIXA
+                        # BAIXA
                         with c_baixa.expander("✅ Baixar"):
                             with st.form(key=f"bx_{row['id']}"):
                                 dt_bx = st.date_input("Data", datetime.now())
@@ -316,7 +332,7 @@ def main():
                                     db.update_log_status(row['id'], dt_bx, vl_bx, obs_bx)
                                     st.success("Baixado!"); time.sleep(1); st.rerun()
 
-                        # 2. EDITAR (NOVA FUNCIONALIDADE)
+                        # EDITAR
                         with c_edit.expander("✏️ Editar"):
                             with st.form(key=f"ed_{row['id']}"):
                                 ed_tipo = st.text_input("Serviço", value=row['tipo_servico'])
@@ -331,18 +347,18 @@ def main():
                                     if db.edit_log_full(row['id'], novos):
                                         st.success("Editado!"); time.sleep(1); st.rerun()
 
-                        # 3. EXCLUIR (NOVA FUNCIONALIDADE)
-                        if c_del.button("🗑️", key=f"del_{row['id']}", help="Excluir permanentemente"):
+                        # EXCLUIR
+                        if c_del.button("🗑️", key=f"del_{row['id']}", help="Excluir item"):
                             if db.delete_log(row['id']):
                                 st.toast("Item excluído!"); time.sleep(1); st.rerun()
             else:
                 st.info("Nenhuma manutenção pendente.")
 
-    # --- ABA 2: NOVO LANÇAMENTO ---
-    with tab_novo:
+    # --- TELA 2: NOVO LANÇAMENTO ---
+    elif st.session_state.navegacao == "Novo Lançamento":
         st.subheader("Registrar Manutenção")
         
-        # Keys para controlar a limpeza do formulário
+        # Lista de chaves para limpar após o submit
         keys_to_clear = ["n_placa", "n_serv", "n_km", "n_inter", "n_dt", "n_val", "n_resp", "n_obs", "n_done", "n_agendar"]
 
         with st.form("form_novo_registro", clear_on_submit=False):
@@ -351,15 +367,9 @@ def main():
             sel_placa = c1.selectbox("Placa", lista_placas, key="n_placa")
             sel_servico = c2.selectbox("Serviço", ["Troca de Óleo", "Pneus", "Freios", "Correia", "Filtros", "Suspensão", "Elétrica", "Outros"], key="n_serv")
             
-            # KM Sugerido
-            km_sugerido = 0.0
-            if sel_placa:
-                k = df_frota.loc[df_frota['placa'] == sel_placa, 'odometro']
-                if not k.empty: km_sugerido = float(k.values[0])
-            
             c3, c4 = st.columns(2)
-            # KM Base sempre editável
-            km_base = c3.number_input("KM na data do serviço (Atual)", value=km_sugerido, step=100.0, key="n_km")
+            # KM BASE AGORA VEM ZERADO (0.0) PARA PREENCHIMENTO MANUAL
+            km_base = c3.number_input("KM na data do serviço (Manual)", value=0.0, step=100.0, key="n_km")
             intervalo = c4.number_input("Intervalo para próxima (KM)", value=10000.0, step=1000.0, key="n_inter")
             
             proxima_meta = km_base + intervalo
@@ -389,7 +399,7 @@ def main():
                 }
                 db.add_log(dados_originais)
                 
-                # 2. Registro Recorrente
+                # 2. Registro Recorrente (se marcado)
                 if ja_feito and agendar_prox:
                     dados_futuros = {
                         "placa": sel_placa, "tipo": sel_servico, "km": "", "data": "",
@@ -400,16 +410,20 @@ def main():
                 
                 st.success("Salvo com sucesso!")
                 
-                # Limpa os campos da session state manualmente
+                # --- LÓGICA DE LIMPEZA E REDIRECIONAMENTO ---
+                # Limpa os campos da session state
                 for key in keys_to_clear:
                     if key in st.session_state:
                         del st.session_state[key]
                 
-                time.sleep(1)
+                # Força a navegação para Pendências
+                st.session_state.navegacao = "Pendências"
+                
+                time.sleep(0.5)
                 st.rerun()
 
-    # --- ABA 3: HISTÓRICO ---
-    with tab_hist:
+    # --- TELA 3: HISTÓRICO ---
+    elif st.session_state.navegacao == "Histórico":
         if not df_logs.empty and 'status' in df_logs.columns:
             concluidos = df_logs[df_logs['status'] == 'Concluido'].sort_values('id', ascending=False)
             st.dataframe(concluidos, use_container_width=True, hide_index=True)
