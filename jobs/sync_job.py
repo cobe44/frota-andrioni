@@ -66,7 +66,7 @@ class SascarService:
                             try:
                                 clean_date = raw_date.split('.')[0]
                                 dt_obj = datetime.strptime(clean_date, "%Y-%m-%dT%H:%M:%S")
-                                dt_obj = dt_obj - timedelta(hours=3)
+                                dt_obj = dt_obj - timedelta(hours=3) # Ajuste Fuso Brasil
                                 ts = dt_obj.strftime("%Y-%m-%d %H:%M:%S")
                             except:
                                 ts = raw_date.replace('T', ' ')
@@ -79,7 +79,7 @@ class SascarService:
         except: return []
 
 def run_sync():
-    print("🚀 Robô Iniciado...")
+    print("🚀 Robô Iniciado (Modo Turbo - Esvaziar Fila)...")
     
     try:
         creds_dict = json.loads(GCP_JSON)
@@ -102,18 +102,33 @@ def run_sync():
             print("✅ Veículos atualizados.")
         except: pass
 
-    # 2. Baixa Fila (Max 5 pacotes)
+    # 2. LOOP AGRESSIVO (Até 50 pacotes de 1000 = 50.000 posições)
+    # Isso garante que vamos chegar no dado mais atual
     todas_posicoes = []
-    for i in range(5):
+    max_loops = 50 
+    
+    for i in range(max_loops):
         print(f"⏳ Baixando pacote {i+1}...")
+        
         lote = svc.get_positions(qtd=1000)
-        if not lote: break
+        
+        if not lote: 
+            print("⏹️ Fila da Sascar vazia (Chegamos no final).")
+            break
+            
         todas_posicoes.extend(lote)
-        if len(lote) < 1000: break
-        time.sleep(1)
+        
+        # Se vier menos de 1000, significa que acabou a fila
+        if len(lote) < 1000: 
+            print("⏹️ Último pacote recebido.")
+            break
+            
+        # Pausa mínima para não ser bloqueado por spam
+        time.sleep(0.5)
 
     if todas_posicoes:
-        print(f"💾 Processando {len(todas_posicoes)} registros...")
+        print(f"💾 Processando {len(todas_posicoes)} registros na memória...")
+        
         try:
             ws_v = sh.worksheet("vehicles")
             dv = pd.DataFrame(ws_v.get_all_records())
@@ -127,24 +142,43 @@ def run_sync():
 
         try:
             ws_pos = sh.worksheet("positions")
-            existentes = ws_pos.get_all_records()
-            df_old = pd.DataFrame(existentes)
+            
+            # --- OTIMIZAÇÃO CRÍTICA ---
+            # Em vez de salvar 50.000 linhas, processamos tudo aqui no Python
+            # e salvamos APENAS a última linha de cada caminhão.
+            
+            # 1. Lê o que já tinha no Sheets
+            try:
+                existentes = ws_pos.get_all_records()
+                df_old = pd.DataFrame(existentes)
+            except:
+                df_old = pd.DataFrame()
+
+            # 2. Cria DataFrame com o que baixamos agora
             df_new = pd.DataFrame(dados_fmt, columns=["id_pacote", "id_veiculo", "placa", "timestamp", "odometro"])
             
+            # 3. Junta tudo
             df_total = pd.concat([df_old, df_new])
+            
             if not df_total.empty:
                 df_total['timestamp'] = pd.to_datetime(df_total['timestamp'], errors='coerce')
+                
+                # 4. A Mágica: Mantém apenas o registro mais recente de cada placa
                 df_limpo = df_total.sort_values('timestamp').drop_duplicates(subset=['placa'], keep='last')
+                
+                # 5. Formata a data de volta para string
                 df_limpo['timestamp'] = df_limpo['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S')
                 
+                # 6. Sobrescreve a planilha (agora ela fica leve, com poucas linhas)
                 ws_pos.clear()
                 ws_pos.append_row(["id_pacote", "id_veiculo", "placa", "timestamp", "odometro"])
                 ws_pos.append_rows(df_limpo.values.tolist())
-                print(f"✅ SUCESSO! Base atualizada.")
+                
+                print(f"✅ SUCESSO! Base atualizada. (Baixados: {len(todas_posicoes)} -> Salvos: {len(df_limpo)})")
         except Exception as e:
             print(f"❌ Erro ao salvar: {e}")
     else:
-        print("💤 Fila vazia.")
+        print("💤 Nenhum dado novo encontrado.")
 
 if __name__ == "__main__":
     run_sync()
