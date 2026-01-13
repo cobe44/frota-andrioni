@@ -366,19 +366,18 @@ def main():
     mapa_km_total = {}
     
     # Processa Sascar
-    if notdf_pos_sascar.empty:
+    if not df_pos_sascar.empty:
         df_pos_sascar['timestamp'] = pd.to_datetime(df_pos_sascar['timestamp'], errors='coerce')
         df_pos_sascar['odometro'] = pd.to_numeric(df_pos_sascar['odometro'], errors='coerce')
         last_pos = df_pos_sascar.sort_values('timestamp').groupby('id_veiculo').tail(1)
         
         # Mapeia placa -> odometro
-        # Precisamos garantir que temos a placa no last_pos
         if not df_v_sascar.empty:
              # Mapa ID -> Placa
             map_id_placa = dict(zip(df_v_sascar['id_veiculo'].astype(str), df_v_sascar['placa']))
             for _, row in last_pos.iterrows():
                 p_id = str(row['id_veiculo'])
-                p_placa = map_id_placa.get(p_id, row['placa']) # Tenta pegar do cadastro, senao usa o da posicao
+                p_placa = map_id_placa.get(p_id, row['placa']) 
                 mapa_km_total[p_placa] = row['odometro']
 
     # Processa Manuais (Adiciona ou Sobrescreve no mapa)
