@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import gspread
+from gspread.exceptions import APIError # Importante para tratar o erro
 import requests
 import xml.etree.ElementTree as ET
 import html
@@ -56,7 +57,7 @@ class SascarService:
             r = requests.post(self.url, data=envelope, headers=self.headers, timeout=40)
             return r.status_code, r.content
         except Exception as e:
-            st.error(f"Erro de conexão com Sascar: {e}")
+            st.error(f"Erro Sascar: {e}")
             return 0, str(e)
 
     def get_vehicles(self):
@@ -74,15 +75,8 @@ class SascarService:
         except: return []
 
     def get_positions(self, qtd=1000):
-        # Solicita pacote de posições (FILA)
         code, xml = self._send_soap("obterPacotePosicoes", f"<quantidade>{qtd}</quantidade>")
-        
-        if code != 200:
-            # Se der erro, mostra no debug para sabermos o motivo (ex: senha errada)
-            if "Fault" in str(xml): 
-                st.warning(f"Aviso da Sascar: {str(xml)}")
-            return []
-            
+        if code != 200: return []
         posicoes = []
         try:
             root = ET.fromstring(xml)
@@ -90,7 +84,7 @@ class SascarService:
                 if item.tag.endswith('return'):
                     d = {child.tag.split('}')[-1]: child.text for child in item}
                     if 'idPacote' in d and 'idVeiculo' in d:
-                        # --- CORREÇÃO DE DATA E FUSO HORÁRIO (-3h) ---
+                        # Fuso Horário -3h
                         raw_date = d.get('dataPosicao', '')
                         ts = ""
                         if raw_date:
@@ -101,8 +95,7 @@ class SascarService:
                                 ts = dt_obj.strftime("%Y-%m-%d %H:%M:%S")
                             except:
                                 ts = raw_date.replace('T', ' ')
-                        # ---------------------------------------------
-
+                        
                         odo = float(d.get('odometro', 0))
                         posicoes.append({
                             'id_pacote': d['idPacote'],
@@ -111,9 +104,7 @@ class SascarService:
                             'odometro': odo
                         })
             return posicoes
-        except Exception as e:
-            st.error(f"Erro ao ler XML: {e}")
-            return []
+        except: return []
 
 class FleetDatabase:
     def __init__(self, sheet_name="frota_db"):
@@ -130,13 +121,49 @@ class FleetDatabase:
             st.error(f"Erro conexão Sheets: {e}")
             return None
 
+    # --- PROTEÇÃO CONTRA API ERROR (QUOTA) ---
+    def _safe_get_worksheet(self, sh, title):
+        """ Tenta pegar a aba, se der erro de API, espera e tenta de novo """
+        for attempt in range(4): # Tenta 4 vezes
+            try:
+                return sh.worksheet(title)
+            except APIError:
+                time.sleep(2 * (attempt + 1)) # Espera 2s, 4s, 6s...
+            except Exception:
+                return None
+        return None
+    
+    def _safe_clear(self, ws):
+        """ Limpa com retry """
+        for attempt in range(4):
+            try:
+                ws.clear()
+                return True
+            except APIError:
+                time.sleep(2)
+        return False
+
+    def _safe_append(self, ws, rows):
+        """ Appenda com retry """
+        for attempt in range(4):
+            try:
+                ws.append_rows(rows)
+                return True
+            except APIError:
+                time.sleep(2)
+        return False
+    # -----------------------------------------
+
     def get_dataframe(self, worksheet_name):
         sh = self._get_connection()
         if not sh: return pd.DataFrame()
         try:
-            ws = sh.worksheet(worksheet_name)
+            ws = self._safe_get_worksheet(sh, worksheet_name)
+            if not ws: return pd.DataFrame()
+            
             data = ws.get_all_records()
             df = pd.DataFrame(data)
+            
             if worksheet_name == "maintenance_logs":
                 if df.empty: return pd.DataFrame(columns=self.log_cols)
                 for col in self.log_cols:
@@ -149,14 +176,14 @@ class FleetDatabase:
         sh = self._get_connection()
         if not sh: return defaults
         try:
-            ws = sh.worksheet("service_types")
+            ws = self._safe_get_worksheet(sh, "service_types")
+            if not ws: return defaults
             vals = ws.col_values(2) 
             if len(vals) > 1: return vals[1:]
             return defaults
         except: return defaults
 
     def sync_sascar_data(self, sascar_service: SascarService):
-        """ MÉTODO HÍBRIDO: BAIXA FILA MAS COM LIMITE DE SEGURANÇA """
         status_msg = st.empty()
         status_msg.info("⏳ Conectando à Sascar...")
         
@@ -164,18 +191,18 @@ class FleetDatabase:
         veiculos_api = sascar_service.get_vehicles()
         if veiculos_api:
             sh = self._get_connection()
-            ws = sh.worksheet("vehicles")
-            ws.clear()
-            ws.append_row(["id_veiculo", "placa"])
-            ws.append_rows(veiculos_api)
+            ws = self._safe_get_worksheet(sh, "vehicles")
+            if ws:
+                self._safe_clear(ws)
+                ws.append_row(["id_veiculo", "placa"])
+                self._safe_append(ws, veiculos_api)
         else:
-            status_msg.error("❌ Não foi possível obter a lista de veículos.")
-            time.sleep(3)
+            status_msg.error("❌ Erro ao listar veículos.")
+            time.sleep(2)
             return False
         
-        # 2. LOOP COM TRAVA DE SEGURANÇA
-        # Baixa no máximo 5 pacotes (5.000 posições) para não travar num loop infinito
-        max_loops = 5 
+        # 2. LOOP (Fila com limite de 5 pacotes)
+        max_loops = 5
         todas_novas_posicoes = []
         
         for i in range(max_loops):
@@ -183,19 +210,17 @@ class FleetDatabase:
             status_msg.info(msg)
             
             lote = sascar_service.get_positions(qtd=1000)
-            
-            if not lote:
-                break # Fila vazia
+            if not lote: break
             
             todas_novas_posicoes.extend(lote)
+            if len(lote) < 1000: break
             
-            # Se o pacote veio incompleto (menos de 1000), acabou a fila
-            if len(lote) < 1000:
-                break
+            # Pausa pequena para não estourar o limite do Google na hora de salvar depois
+            time.sleep(1) 
         
         # 3. Processamento
         if todas_novas_posicoes:
-            status_msg.info(f"💾 Processando {len(todas_novas_posicoes)} posições...")
+            status_msg.info(f"💾 Salvando {len(todas_novas_posicoes)} registros...")
             
             df_v = self.get_dataframe("vehicles")
             map_placa = {}
@@ -210,42 +235,46 @@ class FleetDatabase:
                 ])
             
             sh = self._get_connection()
-            ws_pos = sh.worksheet("positions")
+            ws_pos = self._safe_get_worksheet(sh, "positions")
             
-            # --- LIMPEZA E OTIMIZAÇÃO ---
-            dados_existentes = ws_pos.get_all_records()
-            colunas = ["id_pacote", "id_veiculo", "placa", "timestamp", "odometro"]
-            
-            df_antigo = pd.DataFrame(dados_existentes)
-            df_novo = pd.DataFrame(dados_formatados, columns=colunas)
-            df_total = pd.concat([df_antigo, df_novo])
-            
-            if not df_total.empty:
-                # Ordena por data
-                df_total['timestamp'] = pd.to_datetime(df_total['timestamp'], errors='coerce')
+            if ws_pos:
+                # Leitura segura
+                try:
+                    dados_existentes = ws_pos.get_all_records()
+                except APIError:
+                    time.sleep(3)
+                    dados_existentes = ws_pos.get_all_records()
+
+                colunas = ["id_pacote", "id_veiculo", "placa", "timestamp", "odometro"]
                 
-                # Mantém APENAS a última leitura de cada placa
-                df_limpo = df_total.sort_values('timestamp').drop_duplicates(subset=['placa'], keep='last')
+                df_antigo = pd.DataFrame(dados_existentes)
+                df_novo = pd.DataFrame(dados_formatados, columns=colunas)
+                df_total = pd.concat([df_antigo, df_novo])
                 
-                # Formata data para string
-                df_limpo['timestamp'] = df_limpo['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S')
-                
-                ws_pos.clear()
-                ws_pos.append_row(colunas)
-                ws_pos.append_rows(df_limpo.values.tolist())
-                
-                status_msg.success(f"✅ Sucesso! {len(todas_novas_posicoes)} posições baixadas.")
-            else:
-                status_msg.warning("⚠️ Dados vazios após processamento.")
+                if not df_total.empty:
+                    df_total['timestamp'] = pd.to_datetime(df_total['timestamp'], errors='coerce')
+                    # Mantém APENAS a última leitura de cada placa
+                    df_limpo = df_total.sort_values('timestamp').drop_duplicates(subset=['placa'], keep='last')
+                    df_limpo['timestamp'] = df_limpo['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S')
+                    
+                    self._safe_clear(ws_pos)
+                    ws_pos.append_row(colunas)
+                    self._safe_append(ws_pos, df_limpo.values.tolist())
+                    
+                    status_msg.success(f"✅ Sucesso! Base atualizada.")
+                else:
+                    status_msg.warning("⚠️ Dados vazios.")
         else:
-            status_msg.success("✅ A fila da Sascar já estava vazia. Tudo atualizado.")
+            status_msg.success("✅ Tudo atualizado.")
             
         time.sleep(2); status_msg.empty()
         return True
 
     def add_log(self, data_dict):
         sh = self._get_connection()
-        ws = sh.worksheet("maintenance_logs")
+        ws = self._safe_get_worksheet(sh, "maintenance_logs")
+        if not ws: return
+        
         col_ids = ws.col_values(1)
         next_id = 1
         if len(col_ids) > 1:
@@ -261,7 +290,8 @@ class FleetDatabase:
 
     def update_log_status(self, log_id, data_real, valor_final, obs_final):
         sh = self._get_connection()
-        ws = sh.worksheet("maintenance_logs")
+        ws = self._safe_get_worksheet(sh, "maintenance_logs")
+        if not ws: return
         try:
             cell = ws.find(str(log_id), in_column=1)
             if cell:
@@ -275,7 +305,8 @@ class FleetDatabase:
 
     def delete_log(self, log_id):
         sh = self._get_connection()
-        ws = sh.worksheet("maintenance_logs")
+        ws = self._safe_get_worksheet(sh, "maintenance_logs")
+        if not ws: return False
         try:
             cell = ws.find(str(log_id), in_column=1)
             if cell:
@@ -285,7 +316,8 @@ class FleetDatabase:
 
     def edit_log_full(self, log_id, novos_dados):
         sh = self._get_connection()
-        ws = sh.worksheet("maintenance_logs")
+        ws = self._safe_get_worksheet(sh, "maintenance_logs")
+        if not ws: return False
         try:
             cell = ws.find(str(log_id), in_column=1)
             if cell:
@@ -395,12 +427,10 @@ def main():
                         with c2.expander("✏️ Editar"):
                             with st.form(key=f"ed_{row['id']}"):
                                 e_placa = st.selectbox("Placa", df_frota['placa'].unique(), index=df_frota['placa'].tolist().index(row['placa']) if row['placa'] in df_frota['placa'].tolist() else 0)
-                                
                                 idx_serv = 0
                                 if row['tipo_servico'] in lista_servicos_db:
                                     idx_serv = lista_servicos_db.index(row['tipo_servico'])
                                 e_tipo = st.selectbox("Serviço", lista_servicos_db, index=idx_serv)
-                                
                                 e_resp = st.text_input("Resp", value=row['responsavel'])
                                 e_km = st.number_input("KM Base", value=float(row['km_realizada']) if row['km_realizada'] else 0.0)
                                 e_prox = st.number_input("Meta KM", value=float(row['proxima_km']) if row['proxima_km'] else 0.0)
@@ -419,59 +449,38 @@ def main():
     # --- ABA 2: NOVO LANÇAMENTO ---
     with tab_novo:
         st.subheader("Registrar Manutenção")
-        
         keys_clear = ["n_placa", "n_serv", "n_km", "n_inter", "n_dt", "n_val", "n_resp", "n_obs", "n_done", "n_agendar"]
-
         with st.form("form_novo", clear_on_submit=False):
             l_placas = df_frota['placa'].unique().tolist()
             c1, c2 = st.columns(2)
             sel_placa = c1.selectbox("Placa", l_placas, key="n_placa")
             sel_servico = c2.selectbox("Serviço", lista_servicos_db, key="n_serv")
-            
             c3, c4 = st.columns(2)
             km_base = c3.number_input("KM na data do serviço (Manual)", value=0.0, step=100.0, key="n_km")
             intervalo = c4.number_input("Intervalo (KM)", value=10000.0, step=1000.0, key="n_inter")
-            
             prox_calc = km_base + intervalo
             st.caption(f"📅 Próxima prevista: **{prox_calc:,.0f} KM**")
-
             c5, c6, c7 = st.columns(3)
             dt_reg = c5.date_input("Data", datetime.now() - timedelta(hours=3), key="n_dt")
             val_reg = c6.number_input("Valor (R$)", value=0.0, key="n_val")
             resp_reg = c7.text_input("Responsável", key="n_resp")
             obs_reg = st.text_area("Obs", key="n_obs")
-            
             st.divider()
             cc1, cc2 = st.columns(2)
             is_done = cc1.checkbox("✅ Já realizada (Histórico)", value=True, key="n_done")
             do_sched = cc2.checkbox("🔄 Criar próxima pendência?", value=True, key="n_agendar")
-            
             if st.form_submit_button("💾 Salvar Registro"):
                 stt = "Concluido" if is_done else "Agendado"
                 km_log = km_base if is_done else ""
-                
-                d1 = {
-                    "placa": sel_placa, "tipo": sel_servico, "km": km_log,
-                    "data": dt_reg, "prox_km": prox_calc, "valor": val_reg, 
-                    "obs": obs_reg, "resp": resp_reg, "status": stt
-                }
+                d1 = {"placa": sel_placa, "tipo": sel_servico, "km": km_log, "data": dt_reg, "prox_km": prox_calc, "valor": val_reg, "obs": obs_reg, "resp": resp_reg, "status": stt}
                 db.add_log(d1)
-                
                 if is_done and do_sched:
-                    d2 = {
-                        "placa": sel_placa, "tipo": sel_servico, "km": "", "data": "",
-                        "prox_km": prox_calc, "valor": 0, "obs": "Agendamento automático.",
-                        "resp": "", "status": "Agendado"
-                    }
+                    d2 = {"placa": sel_placa, "tipo": sel_servico, "km": "", "data": "", "prox_km": prox_calc, "valor": 0, "obs": "Agendamento automático.", "resp": "", "status": "Agendado"}
                     db.add_log(d2)
-                
                 st.toast("Salvo com sucesso!")
-                
                 for k in keys_clear:
                     if k in st.session_state: del st.session_state[k]
-                
-                time.sleep(1)
-                st.rerun()
+                time.sleep(1); st.rerun()
 
     # --- ABA 3: HISTÓRICO ---
     with tab_hist:
