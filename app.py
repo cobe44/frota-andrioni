@@ -72,7 +72,6 @@ class FleetDatabase:
         except: return pd.DataFrame()
 
     def get_services_list(self):
-        # Atualizei os padrões para bater com os nomes que você usa
         defaults = ["Troca de Óleo Motor", "Troca de Óleo Cambio e Diferencial", "Pneus", "Freios", "Correia", "Filtros", "Suspensão", "Elétrica", "Outros"]
         sh = self._get_connection()
         if not sh: return defaults
@@ -94,6 +93,8 @@ class FleetDatabase:
                 ws.update_cell(cell.row, 2, novo_km)
             else:
                 ws.append_row([placa, novo_km])
+            # Limpa cache para refletir a mudança
+            carregar_dados_gerais.clear()
             return True
         except: return False
 
@@ -109,6 +110,7 @@ class FleetDatabase:
             if ids: next_id = max(ids) + 1
         row = [next_id, data_dict['placa'], data_dict['tipo'], data_dict['km'], str(data_dict['data']), data_dict['prox_km'], data_dict['resp'], data_dict['valor'], data_dict['obs'], data_dict['status']]
         ws.append_row(row)
+        carregar_dados_gerais.clear() # Limpa cache ao salvar
 
     def update_log_status(self, log_id, data_real, valor_final, obs_final, resp_final, km_final):
         sh = self._get_connection()
@@ -121,11 +123,11 @@ class FleetDatabase:
                 ws.update_cell(cell.row, 5, str(data_real))
                 ws.update_cell(cell.row, 7, resp_final)
                 ws.update_cell(cell.row, 8, valor_final)
-                
                 old_obs = ws.cell(cell.row, 9).value
                 new_obs = f"{old_obs} | Baixa: {obs_final}" if old_obs else obs_final
                 ws.update_cell(cell.row, 9, new_obs)
                 ws.update_cell(cell.row, 10, "Concluido")
+                carregar_dados_gerais.clear() # Limpa cache ao atualizar
         except: pass
 
     def delete_log(self, log_id):
@@ -134,7 +136,10 @@ class FleetDatabase:
         if not ws: return False
         try:
             cell = ws.find(str(log_id), in_column=1)
-            if cell: ws.delete_rows(cell.row); return True
+            if cell: 
+                ws.delete_rows(cell.row)
+                carregar_dados_gerais.clear() # Limpa cache ao deletar
+                return True
         except: return False
 
     def edit_log_full(self, log_id, novos_dados):
@@ -152,28 +157,47 @@ class FleetDatabase:
                 ws.update_cell(r, 7, novos_dados['resp'])
                 ws.update_cell(r, 8, novos_dados['valor'])
                 ws.update_cell(r, 9, novos_dados['obs'])
+                carregar_dados_gerais.clear() # Limpa cache ao editar
                 return True
         except: return False
+
+# --- FUNÇÃO DE CACHE (A MÁGICA DO VELOCIDADE) ---
+@st.cache_data(ttl=300) # Mantém os dados na memória por 5 minutos
+def carregar_dados_gerais():
+    # Instancia banco apenas para leitura
+    db_temp = FleetDatabase()
+    v_sascar = db_temp.get_dataframe("vehicles")
+    pos_sascar = db_temp.get_dataframe("positions")
+    v_manual = db_temp.get_dataframe("veiculos_manuais")
+    logs = db_temp.get_dataframe("maintenance_logs")
+    lista_servicos = db_temp.get_services_list()
+    return v_sascar, pos_sascar, v_manual, logs, lista_servicos
 
 # --- 4. APP PRINCIPAL ---
 def main():
     db = FleetDatabase()
-    lista_servicos_db = db.get_services_list()
-
+    
     with st.sidebar:
         st.header("Gestão de Frota")
         st.caption("🔄 Sincronização automática via GitHub")
+        
+        # O botão agora força a limpeza do cache e recarrega
         if st.button("Atualizar Tela (F5)", use_container_width=True):
+            carregar_dados_gerais.clear()
             st.rerun()
+            
         st.divider()
         
+        # Carrega dados da memória (MUITO RÁPIDO)
+        df_v_sascar, df_pos_sascar, df_v_manual, df_logs, lista_servicos_db = carregar_dados_gerais()
+
         with st.expander("🚗 Atualizar KM Manual", expanded=True):
-            df_manuais = db.get_dataframe("veiculos_manuais")
-            lista_manuais = df_manuais['placa'].tolist() if not df_manuais.empty else []
+            # Veiculos manuais via cache
+            lista_manuais = df_v_manual['placa'].tolist() if not df_v_manual.empty else []
             placa_manual = st.selectbox("Selecione Manual", lista_manuais)
             if placa_manual:
                 km_atual_manual = 0.0
-                linha_atual = df_manuais[df_manuais['placa'] == placa_manual]
+                linha_atual = df_v_manual[df_v_manual['placa'] == placa_manual]
                 if not linha_atual.empty:
                     km_atual_manual = float(linha_atual.iloc[0]['odometro'])
                 novo_km_manual = st.number_input("Novo KM", value=km_atual_manual, step=100.0)
@@ -190,11 +214,7 @@ def main():
 
     st.title("🚛 Painel de Controle")
 
-    df_v_sascar = db.get_dataframe("vehicles")
-    df_pos_sascar = db.get_dataframe("positions")
-    df_v_manual = db.get_dataframe("veiculos_manuais")
-    df_logs = db.get_dataframe("maintenance_logs")
-    
+    # --- PROCESSAMENTO DOS DADOS (MEMÓRIA) ---
     mapa_km_total = {}
     if not df_pos_sascar.empty:
         df_pos_sascar['timestamp'] = pd.to_datetime(df_pos_sascar['timestamp'], errors='coerce')
@@ -317,20 +337,21 @@ def main():
             else:
                 st.info("Nenhuma pendência.")
 
-    # --- ABA 2: NOVO LANÇAMENTO (ATUALIZADA COM PADRÕES) ---
+    # --- ABA 2: NOVO LANÇAMENTO (COM CACHE) ---
     with tab_novo:
         st.subheader("Registrar Manutenção")
         c_sel1, c_sel2 = st.columns(2)
+        
+        # Agora o dropdown é rápido porque a lista_servicos_db vem do cache
         p_selected = c_sel1.selectbox("Selecione a Placa", todas_placas) if todas_placas else None
         s_selected = c_sel2.selectbox("Selecione o Serviço", lista_servicos_db)
         
-        # Pega KM Atual
         km_atual_auto = 0.0
         if p_selected:
             km_atual_auto = float(mapa_km_total.get(p_selected, 0.0))
         
-        # --- DEFINIÇÃO DOS INTERVALOS PADRÃO ---
-        intervalo_sugerido_novo = 10000.0 # Padrão Geral
+        # Lógica de Padrões
+        intervalo_sugerido_novo = 10000.0
         if s_selected == "Troca de Óleo Motor":
             intervalo_sugerido_novo = 40000.0
         elif s_selected == "Troca de Óleo Cambio e Diferencial":
@@ -341,7 +362,7 @@ def main():
             c1, c2 = st.columns(2)
             km_base = c1.number_input("KM Atual (Base)", value=km_atual_auto, step=100.0)
             
-            # O campo de intervalo agora recebe o valor dinâmico baseado no serviço
+            # Atualiza o intervalo instantaneamente sem recarregar a página da web
             intervalo = c2.number_input("Intervalo para próxima (KM)", value=intervalo_sugerido_novo, step=1000.0)
             
             prox_calc = km_base + intervalo
