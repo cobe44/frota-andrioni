@@ -72,7 +72,8 @@ class FleetDatabase:
         except: return pd.DataFrame()
 
     def get_services_list(self):
-        defaults = ["Troca de Óleo", "Pneus", "Freios", "Correia", "Filtros", "Suspensão", "Elétrica", "Outros"]
+        # Atualizei os padrões para bater com os nomes que você usa
+        defaults = ["Troca de Óleo Motor", "Troca de Óleo Cambio e Diferencial", "Pneus", "Freios", "Correia", "Filtros", "Suspensão", "Elétrica", "Outros"]
         sh = self._get_connection()
         if not sh: return defaults
         try:
@@ -109,7 +110,6 @@ class FleetDatabase:
         row = [next_id, data_dict['placa'], data_dict['tipo'], data_dict['km'], str(data_dict['data']), data_dict['prox_km'], data_dict['resp'], data_dict['valor'], data_dict['obs'], data_dict['status']]
         ws.append_row(row)
 
-    # --- ATUALIZADO: SALVA KM REALIZADA ---
     def update_log_status(self, log_id, data_real, valor_final, obs_final, resp_final, km_final):
         sh = self._get_connection()
         ws = self._safe_get_worksheet(sh, "maintenance_logs")
@@ -117,15 +117,15 @@ class FleetDatabase:
         try:
             cell = ws.find(str(log_id), in_column=1)
             if cell:
-                ws.update_cell(cell.row, 4, km_final)       # KM Realizada (Coluna D)
-                ws.update_cell(cell.row, 5, str(data_real)) # Data Realizada
-                ws.update_cell(cell.row, 7, resp_final)     # Responsável
-                ws.update_cell(cell.row, 8, valor_final)    # Valor
+                ws.update_cell(cell.row, 4, km_final)
+                ws.update_cell(cell.row, 5, str(data_real))
+                ws.update_cell(cell.row, 7, resp_final)
+                ws.update_cell(cell.row, 8, valor_final)
                 
                 old_obs = ws.cell(cell.row, 9).value
                 new_obs = f"{old_obs} | Baixa: {obs_final}" if old_obs else obs_final
-                ws.update_cell(cell.row, 9, new_obs)        # Obs
-                ws.update_cell(cell.row, 10, "Concluido")   # Status
+                ws.update_cell(cell.row, 9, new_obs)
+                ws.update_cell(cell.row, 10, "Concluido")
         except: pass
 
     def delete_log(self, log_id):
@@ -253,9 +253,7 @@ def main():
                         with c1.expander("✅ Baixar O.S."):
                             with st.form(key=f"bx_{row['id']}"):
                                 c_bx1, c_bx2 = st.columns(2)
-                                dt_bx = c_bx1.date_input("Data Real", datetime.now() - timedelta(hours=3)) # Data Hoje
-                                
-                                # NOVO: Campo para colocar o KM Realizado no momento da baixa
+                                dt_bx = c_bx1.date_input("Data Real", datetime.now() - timedelta(hours=3)) 
                                 km_real_bx = c_bx2.number_input("KM Realizado (No Painel)", value=km_atual, step=100.0)
 
                                 c_bx3, c_bx4 = st.columns(2)
@@ -265,13 +263,14 @@ def main():
                                 
                                 st.divider()
                                 
-                                # LOGICA DE INTERVALO AUTOMÁTICO
-                                # Tenta descobrir qual era o intervalo original (Meta - Base Original)
+                                # Cálculo inteligente de intervalo na baixa
                                 try:
                                     base_antiga = float(row['km_realizada']) if row['km_realizada'] else 0
                                     meta_antiga = float(row['proxima_km'])
-                                    intervalo_sugerido = meta_antiga - base_antiga
-                                    # Se der negativo ou zero (erro de cadastro), sugere 10k
+                                    if base_antiga > 0:
+                                        intervalo_sugerido = meta_antiga - base_antiga
+                                    else:
+                                        intervalo_sugerido = 10000.0
                                     if intervalo_sugerido <= 0: intervalo_sugerido = 10000.0
                                 except:
                                     intervalo_sugerido = 10000.0
@@ -283,13 +282,9 @@ def main():
                                     intervalo_final = st.number_input("Intervalo (KM)", value=intervalo_sugerido, step=1000.0)
                                 
                                 if st.form_submit_button("Concluir"):
-                                    # Atualiza com o KM Realizado digitado
                                     db.update_log_status(row['id'], dt_bx, vl_bx, obs_bx, resp_bx, km_real_bx)
-                                    
                                     if reagendar_bx:
-                                        # Nova meta = KM Realizado Agora + Intervalo
                                         nova_meta = km_real_bx + intervalo_final
-                                        
                                         dados_reagendamento = {
                                             "placa": placa, "tipo": row['tipo_servico'], "km": "", "data": "",
                                             "prox_km": nova_meta, "valor": 0, "obs": "Reagendamento automático na baixa.",
@@ -322,22 +317,33 @@ def main():
             else:
                 st.info("Nenhuma pendência.")
 
-    # --- ABA 2: NOVO LANÇAMENTO ---
+    # --- ABA 2: NOVO LANÇAMENTO (ATUALIZADA COM PADRÕES) ---
     with tab_novo:
         st.subheader("Registrar Manutenção")
         c_sel1, c_sel2 = st.columns(2)
         p_selected = c_sel1.selectbox("Selecione a Placa", todas_placas) if todas_placas else None
         s_selected = c_sel2.selectbox("Selecione o Serviço", lista_servicos_db)
         
+        # Pega KM Atual
         km_atual_auto = 0.0
         if p_selected:
             km_atual_auto = float(mapa_km_total.get(p_selected, 0.0))
+        
+        # --- DEFINIÇÃO DOS INTERVALOS PADRÃO ---
+        intervalo_sugerido_novo = 10000.0 # Padrão Geral
+        if s_selected == "Troca de Óleo Motor":
+            intervalo_sugerido_novo = 40000.0
+        elif s_selected == "Troca de Óleo Cambio e Diferencial":
+            intervalo_sugerido_novo = 160000.0
         
         st.divider()
         with st.form("form_novo", clear_on_submit=False):
             c1, c2 = st.columns(2)
             km_base = c1.number_input("KM Atual (Base)", value=km_atual_auto, step=100.0)
-            intervalo = c2.number_input("Intervalo para próxima (KM)", value=10000.0, step=1000.0)
+            
+            # O campo de intervalo agora recebe o valor dinâmico baseado no serviço
+            intervalo = c2.number_input("Intervalo para próxima (KM)", value=intervalo_sugerido_novo, step=1000.0)
+            
             prox_calc = km_base + intervalo
             st.info(f"📅 Próxima manutenção será agendada para: **{prox_calc:,.0f} KM**")
             
