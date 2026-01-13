@@ -2,9 +2,6 @@ import streamlit as st
 import pandas as pd
 import gspread
 from gspread.exceptions import APIError
-import requests
-import xml.etree.ElementTree as ET
-import html
 from datetime import datetime, timedelta
 import time
 
@@ -15,7 +12,7 @@ st.set_page_config(
     page_icon="🚛"
 )
 
-# --- 2. CSS "LISO" E LIMPO ---
+# --- 2. CSS ---
 st.markdown("""
 <style>
     .stApp { background-color: #f8f9fa; }
@@ -36,71 +33,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- 3. SERVIÇOS (SASCAR & DATABASE) ---
-class SascarService:
-    def __init__(self, user, password):
-        self.user = user
-        self.password = password
-        self.url = "https://sasintegra.sascar.com.br/SasIntegra/SasIntegraWSService?wsdl"
-        self.headers = {'Content-Type': 'text/xml; charset=utf-8'}
-        self.ns = "http://webservice.web.integracao.sascar.com.br/"
-
-    def _send_soap(self, method, body_params):
-        envelope = f"""<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:web="{self.ns}">
-           <soapenv:Header/>
-           <soapenv:Body><web:{method}>
-               <usuario>{html.escape(self.user)}</usuario>
-               <senha>{html.escape(self.password)}</senha>
-               {body_params}
-           </web:{method}></soapenv:Body></soapenv:Envelope>"""
-        try:
-            r = requests.post(self.url, data=envelope, headers=self.headers, timeout=40)
-            return r.status_code, r.content
-        except Exception as e:
-            return 0, str(e)
-
-    def get_vehicles(self):
-        code, xml = self._send_soap("obterVeiculos", "<quantidade>1000</quantidade><idVeiculo>0</idVeiculo>")
-        if code != 200: return []
-        veiculos = []
-        try:
-            root = ET.fromstring(xml)
-            for item in root.iter():
-                if item.tag.endswith('return'):
-                    d = {child.tag.split('}')[-1]: child.text for child in item}
-                    if 'idVeiculo' in d and 'placa' in d:
-                        veiculos.append([d['idVeiculo'], d['placa']])
-            return veiculos
-        except: return []
-
-    def get_positions(self, qtd=1000):
-        code, xml = self._send_soap("obterPacotePosicoes", f"<quantidade>{qtd}</quantidade>")
-        if code != 200: return []
-        posicoes = []
-        try:
-            root = ET.fromstring(xml)
-            for item in root.iter():
-                if item.tag.endswith('return'):
-                    d = {child.tag.split('}')[-1]: child.text for child in item}
-                    if 'idPacote' in d and 'idVeiculo' in d:
-                        raw_date = d.get('dataPosicao', '')
-                        ts = ""
-                        if raw_date:
-                            try:
-                                clean_date = raw_date.split('.')[0]
-                                dt_obj = datetime.strptime(clean_date, "%Y-%m-%dT%H:%M:%S")
-                                dt_obj = dt_obj - timedelta(hours=3)
-                                ts = dt_obj.strftime("%Y-%m-%d %H:%M:%S")
-                            except:
-                                ts = raw_date.replace('T', ' ')
-                        odo = float(d.get('odometro', 0))
-                        posicoes.append({
-                            'id_pacote': d['idPacote'], 'id_veiculo': d['idVeiculo'],
-                            'timestamp': ts, 'odometro': odo
-                        })
-            return posicoes
-        except: return []
-
+# --- 3. BANCO DE DADOS (GOOGLE SHEETS) ---
 class FleetDatabase:
     def __init__(self, sheet_name="frota_db"):
         self.sheet_name = sheet_name
@@ -123,18 +56,6 @@ class FleetDatabase:
             except: return None
         return None
     
-    def _safe_clear(self, ws):
-        for attempt in range(4):
-            try: ws.clear(); return True
-            except APIError: time.sleep(2)
-        return False
-
-    def _safe_append(self, ws, rows):
-        for attempt in range(4):
-            try: ws.append_rows(rows); return True
-            except APIError: time.sleep(2)
-        return False
-
     def get_dataframe(self, worksheet_name):
         sh = self._get_connection()
         if not sh: return pd.DataFrame()
@@ -170,80 +91,13 @@ class FleetDatabase:
         try:
             cell = ws.find(placa, in_column=1)
             if cell:
-                ws.update_cell(cell.row, 2, novo_km) # Atualiza coluna B (odometro)
+                ws.update_cell(cell.row, 2, novo_km)
             else:
-                # Se não achar a placa, cria novo
                 ws.append_row([placa, novo_km])
             return True
         except: return False
 
-    def sync_sascar_data(self, sascar_service: SascarService):
-        status_msg = st.empty()
-        status_msg.info("⏳ Conectando à Sascar...")
-        
-        # 1. Veículos
-        veiculos_api = sascar_service.get_vehicles()
-        if veiculos_api:
-            sh = self._get_connection()
-            ws = self._safe_get_worksheet(sh, "vehicles")
-            if ws:
-                self._safe_clear(ws)
-                ws.append_row(["id_veiculo", "placa"])
-                self._safe_append(ws, veiculos_api)
-        else:
-            status_msg.error("❌ Erro ao listar veículos.")
-            time.sleep(2); return False
-        
-        # 2. LOOP (Fila com limite de 5 pacotes)
-        max_loops = 5
-        todas_novas_posicoes = []
-        for i in range(max_loops):
-            msg = f"⏳ Baixando pacote {i+1}/{max_loops}..."
-            status_msg.info(msg)
-            lote = sascar_service.get_positions(qtd=1000)
-            if not lote: break
-            todas_novas_posicoes.extend(lote)
-            if len(lote) < 1000: break
-            time.sleep(1) 
-        
-        if todas_novas_posicoes:
-            status_msg.info(f"💾 Salvando {len(todas_novas_posicoes)} registros...")
-            df_v = self.get_dataframe("vehicles")
-            map_placa = {}
-            if not df_v.empty:
-                map_placa = dict(zip(df_v['id_veiculo'].astype(str), df_v['placa']))
-            
-            dados_formatados = []
-            for p in todas_novas_posicoes:
-                placa = map_placa.get(str(p['id_veiculo']), "Desconhecido")
-                dados_formatados.append([p['id_pacote'], p['id_veiculo'], placa, p['timestamp'], p['odometro']])
-            
-            sh = self._get_connection()
-            ws_pos = self._safe_get_worksheet(sh, "positions")
-            if ws_pos:
-                try: dados_existentes = ws_pos.get_all_records()
-                except APIError: time.sleep(3); dados_existentes = ws_pos.get_all_records()
-                
-                colunas = ["id_pacote", "id_veiculo", "placa", "timestamp", "odometro"]
-                df_antigo = pd.DataFrame(dados_existentes)
-                df_novo = pd.DataFrame(dados_formatados, columns=colunas)
-                df_total = pd.concat([df_antigo, df_novo])
-                
-                if not df_total.empty:
-                    df_total['timestamp'] = pd.to_datetime(df_total['timestamp'], errors='coerce')
-                    df_limpo = df_total.sort_values('timestamp').drop_duplicates(subset=['placa'], keep='last')
-                    df_limpo['timestamp'] = df_limpo['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S')
-                    
-                    self._safe_clear(ws_pos)
-                    ws_pos.append_row(colunas)
-                    self._safe_append(ws_pos, df_limpo.values.tolist())
-                    status_msg.success(f"✅ Sucesso! Base atualizada.")
-                else: status_msg.warning("⚠️ Dados vazios.")
-        else: status_msg.success("✅ Tudo atualizado."); 
-            
-        time.sleep(2); status_msg.empty()
-        return True
-
+    # --- FUNÇÕES DE LOG (CRUD) ---
     def add_log(self, data_dict):
         sh = self._get_connection()
         ws = self._safe_get_worksheet(sh, "maintenance_logs")
@@ -301,38 +155,25 @@ class FleetDatabase:
 # --- 4. APP PRINCIPAL ---
 def main():
     db = FleetDatabase()
-    if 'last_sync' not in st.session_state: st.session_state.last_sync = None
-    
     lista_servicos_db = db.get_services_list()
 
-    # --- SIDEBAR ---
+    # --- SIDEBAR LIMPA ---
     with st.sidebar:
         st.header("Gestão de Frota")
+        st.caption("🔄 Sincronização automática via GitHub")
         
-        # Sincronização Sascar
-        default_user = st.secrets.get("sascar", {}).get("user", "")
-        default_pass = st.secrets.get("sascar", {}).get("password", "")
-        with st.expander("🔐 Sascar Sync"):
-            sascar_user = st.text_input("Usuário", value=default_user)
-            sascar_pass = st.text_input("Senha", type="password", value=default_pass)
-            if st.button("🔄 Sincronizar Agora", use_container_width=True):
-                if sascar_user and sascar_pass:
-                    svc = SascarService(sascar_user, sascar_pass)
-                    if db.sync_sascar_data(svc):
-                        st.session_state.last_sync = datetime.now()
-                        st.rerun()
+        if st.button("Atualizar Tela (F5)", use_container_width=True):
+            st.rerun()
 
         st.divider()
         
         # --- ATUALIZADOR DE KM MANUAL ---
         with st.expander("🚗 Atualizar KM Manual", expanded=True):
-            # Carrega manuais para o selectbox
             df_manuais = db.get_dataframe("veiculos_manuais")
             lista_manuais = df_manuais['placa'].tolist() if not df_manuais.empty else []
             
             placa_manual = st.selectbox("Selecione Manual", lista_manuais)
             if placa_manual:
-                # Tenta pegar KM atual
                 km_atual_manual = 0.0
                 linha_atual = df_manuais[df_manuais['placa'] == placa_manual]
                 if not linha_atual.empty:
@@ -344,7 +185,6 @@ def main():
                         st.success("Atualizado!")
                         time.sleep(1); st.rerun()
             
-            # Adicionar novo veiculo manual rapido
             with st.popover("➕ Cadastrar Novo Manual"):
                 novo_placa = st.text_input("Nova Placa")
                 novo_km_ini = st.number_input("KM Inicial", value=0.0)
@@ -354,43 +194,37 @@ def main():
 
     st.title("🚛 Painel de Controle")
 
-    # --- CARREGAMENTO E FUSÃO DE DADOS ---
-    # 1. Dados Sascar
+    # --- CARREGAMENTO DE DADOS (APENAS LEITURA) ---
     df_v_sascar = db.get_dataframe("vehicles")
     df_pos_sascar = db.get_dataframe("positions")
+    df_v_manual = db.get_dataframe("veiculos_manuais")
+    df_logs = db.get_dataframe("maintenance_logs")
     
-    # 2. Dados Manuais
-    df_v_manual = db.get_dataframe("veiculos_manuais") # Colunas: placa, odometro
-    
-    # 3. Processamento Sascar
+    # --- FUSÃO DOS DADOS (SASCAR + MANUAL) ---
     mapa_km_total = {}
     
-    # Processa Sascar
+    # 1. Processa dados vindos do Robô (Sascar)
     if not df_pos_sascar.empty:
         df_pos_sascar['timestamp'] = pd.to_datetime(df_pos_sascar['timestamp'], errors='coerce')
         df_pos_sascar['odometro'] = pd.to_numeric(df_pos_sascar['odometro'], errors='coerce')
         last_pos = df_pos_sascar.sort_values('timestamp').groupby('id_veiculo').tail(1)
         
-        # Mapeia placa -> odometro
         if not df_v_sascar.empty:
-             # Mapa ID -> Placa
             map_id_placa = dict(zip(df_v_sascar['id_veiculo'].astype(str), df_v_sascar['placa']))
             for _, row in last_pos.iterrows():
                 p_id = str(row['id_veiculo'])
                 p_placa = map_id_placa.get(p_id, row['placa']) 
                 mapa_km_total[p_placa] = row['odometro']
 
-    # Processa Manuais (Adiciona ou Sobrescreve no mapa)
+    # 2. Processa dados Manuais (Adiciona ao mapa)
     if not df_v_manual.empty:
         for _, row in df_v_manual.iterrows():
             mapa_km_total[row['placa']] = float(row['odometro'])
 
-    # Lista consolidada de todas as placas para os dropdowns
     todas_placas = list(mapa_km_total.keys())
     todas_placas.sort()
 
-    df_logs = db.get_dataframe("maintenance_logs")
-
+    # --- INTERFACE ---
     tab_pend, tab_novo, tab_hist = st.tabs(["🚦 Pendências", "➕ Novo Lançamento", "📚 Histórico"])
 
     # --- ABA 1: PENDÊNCIAS ---
@@ -398,13 +232,12 @@ def main():
         if not df_logs.empty and 'status' in df_logs.columns:
             pendentes = df_logs[df_logs['status'] != 'Concluido'].copy()
             if not pendentes.empty:
-                # Usa o mapa consolidado (Sascar + Manual)
                 pendentes['km_restante'] = pd.to_numeric(pendentes['proxima_km'], errors='coerce') - pendentes['placa'].map(mapa_km_total).fillna(0)
                 pendentes = pendentes.sort_values('km_restante')
 
                 for index, row in pendentes.iterrows():
                     placa = row['placa']
-                    km_atual = float(mapa_km_total.get(placa, 0)) # Pega do mapa geral
+                    km_atual = float(mapa_km_total.get(placa, 0))
                     meta_km = float(row['proxima_km']) if row['proxima_km'] != '' else 0
                     restante = meta_km - km_atual
                     
@@ -439,9 +272,7 @@ def main():
 
                         with c2.expander("✏️ Editar"):
                             with st.form(key=f"ed_{row['id']}"):
-                                # Dropdown com TODAS as placas
                                 e_placa = st.selectbox("Placa", todas_placas, index=todas_placas.index(row['placa']) if row['placa'] in todas_placas else 0)
-                                
                                 idx_serv = 0
                                 if row['tipo_servico'] in lista_servicos_db:
                                     idx_serv = lista_servicos_db.index(row['tipo_servico'])
@@ -467,7 +298,6 @@ def main():
         keys_clear = ["n_placa", "n_serv", "n_km", "n_inter", "n_dt", "n_val", "n_resp", "n_obs", "n_done", "n_agendar"]
         with st.form("form_novo", clear_on_submit=False):
             c1, c2 = st.columns(2)
-            # Dropdown com TODAS as placas
             sel_placa = c1.selectbox("Placa", todas_placas, key="n_placa")
             sel_servico = c2.selectbox("Serviço", lista_servicos_db, key="n_serv")
             c3, c4 = st.columns(2)
