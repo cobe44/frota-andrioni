@@ -110,19 +110,22 @@ class FleetDatabase:
         row = [next_id, data_dict['placa'], data_dict['tipo'], data_dict['km'], str(data_dict['data']), data_dict['prox_km'], data_dict['resp'], data_dict['valor'], data_dict['obs'], data_dict['status']]
         ws.append_row(row)
 
-    def update_log_status(self, log_id, data_real, valor_final, obs_final):
+    # --- ATUALIZADO: AGORA RECEBE O RESPONSÁVEL ---
+    def update_log_status(self, log_id, data_real, valor_final, obs_final, resp_final):
         sh = self._get_connection()
         ws = self._safe_get_worksheet(sh, "maintenance_logs")
         if not ws: return
         try:
             cell = ws.find(str(log_id), in_column=1)
             if cell:
-                ws.update_cell(cell.row, 5, str(data_real))
-                ws.update_cell(cell.row, 8, valor_final)
+                ws.update_cell(cell.row, 5, str(data_real)) # Data Realizada
+                ws.update_cell(cell.row, 7, resp_final)     # Responsável (Coluna G)
+                ws.update_cell(cell.row, 8, valor_final)    # Valor
+                
                 old_obs = ws.cell(cell.row, 9).value
                 new_obs = f"{old_obs} | Baixa: {obs_final}" if old_obs else obs_final
-                ws.update_cell(cell.row, 9, new_obs)
-                ws.update_cell(cell.row, 10, "Concluido")
+                ws.update_cell(cell.row, 9, new_obs)        # Obs
+                ws.update_cell(cell.row, 10, "Concluido")   # Status
         except: pass
 
     def delete_log(self, log_id):
@@ -194,16 +197,15 @@ def main():
 
     st.title("🚛 Painel de Controle")
 
-    # --- CARREGAMENTO DE DADOS (APENAS LEITURA) ---
+    # --- CARREGAMENTO DE DADOS ---
     df_v_sascar = db.get_dataframe("vehicles")
     df_pos_sascar = db.get_dataframe("positions")
     df_v_manual = db.get_dataframe("veiculos_manuais")
     df_logs = db.get_dataframe("maintenance_logs")
     
-    # --- FUSÃO DOS DADOS (SASCAR + MANUAL) ---
+    # --- FUSÃO DOS DADOS ---
     mapa_km_total = {}
     
-    # 1. Processa dados vindos do Robô (Sascar)
     if not df_pos_sascar.empty:
         df_pos_sascar['timestamp'] = pd.to_datetime(df_pos_sascar['timestamp'], errors='coerce')
         df_pos_sascar['odometro'] = pd.to_numeric(df_pos_sascar['odometro'], errors='coerce')
@@ -216,7 +218,6 @@ def main():
                 p_placa = map_id_placa.get(p_id, row['placa']) 
                 mapa_km_total[p_placa] = row['odometro']
 
-    # 2. Processa dados Manuais (Adiciona ao mapa)
     if not df_v_manual.empty:
         for _, row in df_v_manual.iterrows():
             mapa_km_total[row['placa']] = float(row['odometro'])
@@ -261,14 +262,47 @@ def main():
                         """, unsafe_allow_html=True)
                         
                         c1, c2, c3 = st.columns([2, 2, 0.5])
+                        
+                        # --- BOX DE BAIXA (ATUALIZADO) ---
                         with c1.expander("✅ Baixar O.S."):
                             with st.form(key=f"bx_{row['id']}"):
                                 dt_bx = st.date_input("Data Real", datetime.now() - timedelta(hours=3))
                                 vl_bx = st.number_input("Valor R$", value=float(row['valor']) if row['valor'] else 0.0)
+                                # Novo campo Responsável
+                                resp_bx = st.text_input("Responsável", value=row['responsavel']) 
                                 obs_bx = st.text_input("Obs")
+                                
+                                st.divider()
+                                
+                                # Novo campo Reagendar
+                                reagendar_bx = st.checkbox("🔄 Reagendar próxima?")
+                                if reagendar_bx:
+                                    intervalo_bx = st.number_input("Intervalo (KM)", value=10000.0, step=1000.0)
+                                
                                 if st.form_submit_button("Concluir"):
-                                    db.update_log_status(row['id'], dt_bx, vl_bx, obs_bx)
-                                    st.success("Ok!"); time.sleep(0.5); st.rerun()
+                                    # 1. Atualiza a O.S. atual para Concluído
+                                    db.update_log_status(row['id'], dt_bx, vl_bx, obs_bx, resp_bx)
+                                    
+                                    # 2. Cria a nova O.S. se solicitado
+                                    if reagendar_bx:
+                                        nova_meta = km_atual + intervalo_bx
+                                        dados_reagendamento = {
+                                            "placa": placa,
+                                            "tipo": row['tipo_servico'],
+                                            "km": "", # Agendamento não tem KM realizado ainda
+                                            "data": "",
+                                            "prox_km": nova_meta,
+                                            "valor": 0,
+                                            "obs": "Reagendamento automático na baixa.",
+                                            "resp": resp_bx,
+                                            "status": "Agendado"
+                                        }
+                                        db.add_log(dados_reagendamento)
+                                        st.toast(f"✅ Baixado e reagendado para {nova_meta:,.0f} KM!")
+                                    else:
+                                        st.toast("✅ O.S. Baixada com sucesso!")
+                                        
+                                    time.sleep(1); st.rerun()
 
                         with c2.expander("✏️ Editar"):
                             with st.form(key=f"ed_{row['id']}"):
