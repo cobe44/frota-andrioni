@@ -83,7 +83,6 @@ class FleetDatabase:
             return defaults
         except: return defaults
 
-    # --- ATUALIZAR KM MANUAL ---
     def update_manual_km(self, placa, novo_km):
         sh = self._get_connection()
         ws = self._safe_get_worksheet(sh, "veiculos_manuais")
@@ -110,16 +109,17 @@ class FleetDatabase:
         row = [next_id, data_dict['placa'], data_dict['tipo'], data_dict['km'], str(data_dict['data']), data_dict['prox_km'], data_dict['resp'], data_dict['valor'], data_dict['obs'], data_dict['status']]
         ws.append_row(row)
 
-    # --- ATUALIZADO: AGORA RECEBE O RESPONSÁVEL ---
-    def update_log_status(self, log_id, data_real, valor_final, obs_final, resp_final):
+    # --- ATUALIZADO: SALVA KM REALIZADA ---
+    def update_log_status(self, log_id, data_real, valor_final, obs_final, resp_final, km_final):
         sh = self._get_connection()
         ws = self._safe_get_worksheet(sh, "maintenance_logs")
         if not ws: return
         try:
             cell = ws.find(str(log_id), in_column=1)
             if cell:
+                ws.update_cell(cell.row, 4, km_final)       # KM Realizada (Coluna D)
                 ws.update_cell(cell.row, 5, str(data_real)) # Data Realizada
-                ws.update_cell(cell.row, 7, resp_final)     # Responsável (Coluna G)
+                ws.update_cell(cell.row, 7, resp_final)     # Responsável
                 ws.update_cell(cell.row, 8, valor_final)    # Valor
                 
                 old_obs = ws.cell(cell.row, 9).value
@@ -160,33 +160,26 @@ def main():
     db = FleetDatabase()
     lista_servicos_db = db.get_services_list()
 
-    # --- SIDEBAR LIMPA ---
     with st.sidebar:
         st.header("Gestão de Frota")
         st.caption("🔄 Sincronização automática via GitHub")
-        
         if st.button("Atualizar Tela (F5)", use_container_width=True):
             st.rerun()
-
         st.divider()
         
-        # --- ATUALIZADOR DE KM MANUAL ---
         with st.expander("🚗 Atualizar KM Manual", expanded=True):
             df_manuais = db.get_dataframe("veiculos_manuais")
             lista_manuais = df_manuais['placa'].tolist() if not df_manuais.empty else []
-            
             placa_manual = st.selectbox("Selecione Manual", lista_manuais)
             if placa_manual:
                 km_atual_manual = 0.0
                 linha_atual = df_manuais[df_manuais['placa'] == placa_manual]
                 if not linha_atual.empty:
                     km_atual_manual = float(linha_atual.iloc[0]['odometro'])
-                    
                 novo_km_manual = st.number_input("Novo KM", value=km_atual_manual, step=100.0)
                 if st.button("Salvar KM"):
                     if db.update_manual_km(placa_manual, novo_km_manual):
-                        st.success("Atualizado!")
-                        time.sleep(1); st.rerun()
+                        st.success("Atualizado!"); time.sleep(1); st.rerun()
             
             with st.popover("➕ Cadastrar Novo Manual"):
                 novo_placa = st.text_input("Nova Placa")
@@ -197,27 +190,22 @@ def main():
 
     st.title("🚛 Painel de Controle")
 
-    # --- CARREGAMENTO DE DADOS ---
     df_v_sascar = db.get_dataframe("vehicles")
     df_pos_sascar = db.get_dataframe("positions")
     df_v_manual = db.get_dataframe("veiculos_manuais")
     df_logs = db.get_dataframe("maintenance_logs")
     
-    # --- FUSÃO DOS DADOS ---
     mapa_km_total = {}
-    
     if not df_pos_sascar.empty:
         df_pos_sascar['timestamp'] = pd.to_datetime(df_pos_sascar['timestamp'], errors='coerce')
         df_pos_sascar['odometro'] = pd.to_numeric(df_pos_sascar['odometro'], errors='coerce')
         last_pos = df_pos_sascar.sort_values('timestamp').groupby('id_veiculo').tail(1)
-        
         if not df_v_sascar.empty:
             map_id_placa = dict(zip(df_v_sascar['id_veiculo'].astype(str), df_v_sascar['placa']))
             for _, row in last_pos.iterrows():
                 p_id = str(row['id_veiculo'])
                 p_placa = map_id_placa.get(p_id, row['placa']) 
                 mapa_km_total[p_placa] = row['odometro']
-
     if not df_v_manual.empty:
         for _, row in df_v_manual.iterrows():
             mapa_km_total[row['placa']] = float(row['odometro'])
@@ -225,7 +213,6 @@ def main():
     todas_placas = list(mapa_km_total.keys())
     todas_placas.sort()
 
-    # --- INTERFACE ---
     tab_pend, tab_novo, tab_hist = st.tabs(["🚦 Pendências", "➕ Novo Lançamento", "📚 Histórico"])
 
     # --- ABA 1: PENDÊNCIAS ---
@@ -263,45 +250,55 @@ def main():
                         
                         c1, c2, c3 = st.columns([2, 2, 0.5])
                         
-                        # --- BOX DE BAIXA (ATUALIZADO) ---
                         with c1.expander("✅ Baixar O.S."):
                             with st.form(key=f"bx_{row['id']}"):
-                                dt_bx = st.date_input("Data Real", datetime.now() - timedelta(hours=3))
-                                vl_bx = st.number_input("Valor R$", value=float(row['valor']) if row['valor'] else 0.0)
-                                # Novo campo Responsável
-                                resp_bx = st.text_input("Responsável", value=row['responsavel']) 
+                                c_bx1, c_bx2 = st.columns(2)
+                                dt_bx = c_bx1.date_input("Data Real", datetime.now() - timedelta(hours=3)) # Data Hoje
+                                
+                                # NOVO: Campo para colocar o KM Realizado no momento da baixa
+                                km_real_bx = c_bx2.number_input("KM Realizado (No Painel)", value=km_atual, step=100.0)
+
+                                c_bx3, c_bx4 = st.columns(2)
+                                vl_bx = c_bx3.number_input("Valor R$", value=float(row['valor']) if row['valor'] else 0.0)
+                                resp_bx = c_bx4.text_input("Responsável", value=row['responsavel']) 
                                 obs_bx = st.text_input("Obs")
                                 
                                 st.divider()
                                 
-                                # Novo campo Reagendar
-                                reagendar_bx = st.checkbox("🔄 Reagendar próxima?")
+                                # LOGICA DE INTERVALO AUTOMÁTICO
+                                # Tenta descobrir qual era o intervalo original (Meta - Base Original)
+                                try:
+                                    base_antiga = float(row['km_realizada']) if row['km_realizada'] else 0
+                                    meta_antiga = float(row['proxima_km'])
+                                    intervalo_sugerido = meta_antiga - base_antiga
+                                    # Se der negativo ou zero (erro de cadastro), sugere 10k
+                                    if intervalo_sugerido <= 0: intervalo_sugerido = 10000.0
+                                except:
+                                    intervalo_sugerido = 10000.0
+
+                                reagendar_bx = st.checkbox(f"🔄 Reagendar próxima? (Intervalo Sugerido: {intervalo_sugerido:,.0f})")
+                                
+                                intervalo_final = 0.0
                                 if reagendar_bx:
-                                    intervalo_bx = st.number_input("Intervalo (KM)", value=10000.0, step=1000.0)
+                                    intervalo_final = st.number_input("Intervalo (KM)", value=intervalo_sugerido, step=1000.0)
                                 
                                 if st.form_submit_button("Concluir"):
-                                    # 1. Atualiza a O.S. atual para Concluído
-                                    db.update_log_status(row['id'], dt_bx, vl_bx, obs_bx, resp_bx)
+                                    # Atualiza com o KM Realizado digitado
+                                    db.update_log_status(row['id'], dt_bx, vl_bx, obs_bx, resp_bx, km_real_bx)
                                     
-                                    # 2. Cria a nova O.S. se solicitado
                                     if reagendar_bx:
-                                        nova_meta = km_atual + intervalo_bx
+                                        # Nova meta = KM Realizado Agora + Intervalo
+                                        nova_meta = km_real_bx + intervalo_final
+                                        
                                         dados_reagendamento = {
-                                            "placa": placa,
-                                            "tipo": row['tipo_servico'],
-                                            "km": "", # Agendamento não tem KM realizado ainda
-                                            "data": "",
-                                            "prox_km": nova_meta,
-                                            "valor": 0,
-                                            "obs": "Reagendamento automático na baixa.",
-                                            "resp": resp_bx,
-                                            "status": "Agendado"
+                                            "placa": placa, "tipo": row['tipo_servico'], "km": "", "data": "",
+                                            "prox_km": nova_meta, "valor": 0, "obs": "Reagendamento automático na baixa.",
+                                            "resp": resp_bx, "status": "Agendado"
                                         }
                                         db.add_log(dados_reagendamento)
                                         st.toast(f"✅ Baixado e reagendado para {nova_meta:,.0f} KM!")
                                     else:
                                         st.toast("✅ O.S. Baixada com sucesso!")
-                                        
                                     time.sleep(1); st.rerun()
 
                         with c2.expander("✏️ Editar"):
@@ -320,7 +317,6 @@ def main():
                                     novos = {'placa':e_placa, 'tipo':e_tipo, 'resp':e_resp, 'km':e_km, 'prox_km':e_prox, 'valor':e_val, 'obs':e_obs}
                                     db.edit_log_full(row['id'], novos)
                                     st.rerun()
-
                         if c3.button("🗑️", key=f"del_{row['id']}", help="Excluir"):
                             db.delete_log(row['id']); st.rerun()
             else:
@@ -329,37 +325,49 @@ def main():
     # --- ABA 2: NOVO LANÇAMENTO ---
     with tab_novo:
         st.subheader("Registrar Manutenção")
-        keys_clear = ["n_placa", "n_serv", "n_km", "n_inter", "n_dt", "n_val", "n_resp", "n_obs", "n_done", "n_agendar"]
+        c_sel1, c_sel2 = st.columns(2)
+        p_selected = c_sel1.selectbox("Selecione a Placa", todas_placas) if todas_placas else None
+        s_selected = c_sel2.selectbox("Selecione o Serviço", lista_servicos_db)
+        
+        km_atual_auto = 0.0
+        if p_selected:
+            km_atual_auto = float(mapa_km_total.get(p_selected, 0.0))
+        
+        st.divider()
         with st.form("form_novo", clear_on_submit=False):
             c1, c2 = st.columns(2)
-            sel_placa = c1.selectbox("Placa", todas_placas, key="n_placa")
-            sel_servico = c2.selectbox("Serviço", lista_servicos_db, key="n_serv")
-            c3, c4 = st.columns(2)
-            km_base = c3.number_input("KM na data do serviço (Manual)", value=0.0, step=100.0, key="n_km")
-            intervalo = c4.number_input("Intervalo (KM)", value=10000.0, step=1000.0, key="n_inter")
+            km_base = c1.number_input("KM Atual (Base)", value=km_atual_auto, step=100.0)
+            intervalo = c2.number_input("Intervalo para próxima (KM)", value=10000.0, step=1000.0)
             prox_calc = km_base + intervalo
-            st.caption(f"📅 Próxima prevista: **{prox_calc:,.0f} KM**")
-            c5, c6, c7 = st.columns(3)
-            dt_reg = c5.date_input("Data", datetime.now() - timedelta(hours=3), key="n_dt")
-            val_reg = c6.number_input("Valor (R$)", value=0.0, key="n_val")
-            resp_reg = c7.text_input("Responsável", key="n_resp")
-            obs_reg = st.text_area("Obs", key="n_obs")
+            st.info(f"📅 Próxima manutenção será agendada para: **{prox_calc:,.0f} KM**")
+            
+            c3, c4, c5 = st.columns(3)
+            dt_reg = c3.date_input("Data do Serviço", datetime.now() - timedelta(hours=3))
+            val_reg = c4.number_input("Valor (R$)", value=0.0, step=10.0)
+            resp_reg = c5.text_input("Responsável")
+            obs_reg = st.text_area("Observações")
+            
             st.divider()
             cc1, cc2 = st.columns(2)
-            is_done = cc1.checkbox("✅ Já realizada (Histórico)", value=True, key="n_done")
-            do_sched = cc2.checkbox("🔄 Criar próxima pendência?", value=True, key="n_agendar")
-            if st.form_submit_button("💾 Salvar Registro"):
-                stt = "Concluido" if is_done else "Agendado"
-                km_log = km_base if is_done else ""
-                d1 = {"placa": sel_placa, "tipo": sel_servico, "km": km_log, "data": dt_reg, "prox_km": prox_calc, "valor": val_reg, "obs": obs_reg, "resp": resp_reg, "status": stt}
-                db.add_log(d1)
-                if is_done and do_sched:
-                    d2 = {"placa": sel_placa, "tipo": sel_servico, "km": "", "data": "", "prox_km": prox_calc, "valor": 0, "obs": "Agendamento automático.", "resp": "", "status": "Agendado"}
-                    db.add_log(d2)
-                st.toast("Salvo com sucesso!")
-                for k in keys_clear:
-                    if k in st.session_state: del st.session_state[k]
-                time.sleep(1); st.rerun()
+            is_done = cc1.checkbox("✅ Já realizada (Salvar no Histórico)", value=True)
+            do_sched = cc2.checkbox("🔄 Agendar a próxima?", value=True)
+            
+            if st.form_submit_button("💾 Salvar Lançamento"):
+                if not p_selected:
+                    st.error("Selecione uma placa primeiro.")
+                else:
+                    stt = "Concluido" if is_done else "Agendado"
+                    km_log = km_base if is_done else ""
+                    d1 = {"placa": p_selected, "tipo": s_selected, "km": km_log, "data": dt_reg, 
+                          "prox_km": prox_calc, "valor": val_reg, "obs": obs_reg, "resp": resp_reg, "status": stt}
+                    db.add_log(d1)
+                    if is_done and do_sched:
+                        d2 = {"placa": p_selected, "tipo": s_selected, "km": "", "data": "", 
+                              "prox_km": prox_calc, "valor": 0, "obs": "Agendamento automático.", 
+                              "resp": "", "status": "Agendado"}
+                        db.add_log(d2)
+                    st.toast("Salvo com sucesso!")
+                    time.sleep(1); st.rerun()
 
     # --- ABA 3: HISTÓRICO ---
     with tab_hist:
