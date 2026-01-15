@@ -12,7 +12,7 @@ st.set_page_config(
     page_icon="🚛"
 )
 
-# --- 2. CSS ---
+# --- 2. CSS AJUSTADO PARA GRID ---
 st.markdown("""
 <style>
     .stApp { background-color: #f8f9fa; }
@@ -23,12 +23,13 @@ st.markdown("""
         background: white; 
         margin-bottom: 8px; 
         box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        height: 100%; /* Para alinhar altura no grid */
     }
-    .status-vencido { color: #d9534f; font-weight: 700; text-transform: uppercase; font-size: 0.9rem; }
-    .status-atencao { color: #f0ad4e; font-weight: 700; text-transform: uppercase; font-size: 0.9rem; }
-    .status-ok { color: #5cb85c; font-weight: 700; text-transform: uppercase; font-size: 0.9rem; }
+    .status-vencido { color: #d9534f; font-weight: 700; text-transform: uppercase; font-size: 0.85rem; }
+    .status-atencao { color: #f0ad4e; font-weight: 700; text-transform: uppercase; font-size: 0.85rem; }
+    .status-ok { color: #5cb85c; font-weight: 700; text-transform: uppercase; font-size: 0.85rem; }
     .placa-title { font-size: 1.1rem; font-weight: 700; color: #333; }
-    .meta-info { color: #666; font-size: 0.85rem; margin-top: 4px; }
+    .meta-info { color: #666; font-size: 0.80rem; margin-top: 4px; }
     .block-container { padding-top: 2rem; }
 </style>
 """, unsafe_allow_html=True)
@@ -93,7 +94,6 @@ class FleetDatabase:
                 ws.update_cell(cell.row, 2, novo_km)
             else:
                 ws.append_row([placa, novo_km])
-            # Limpa cache para refletir a mudança
             carregar_dados_gerais.clear()
             return True
         except: return False
@@ -110,7 +110,7 @@ class FleetDatabase:
             if ids: next_id = max(ids) + 1
         row = [next_id, data_dict['placa'], data_dict['tipo'], data_dict['km'], str(data_dict['data']), data_dict['prox_km'], data_dict['resp'], data_dict['valor'], data_dict['obs'], data_dict['status']]
         ws.append_row(row)
-        carregar_dados_gerais.clear() # Limpa cache ao salvar
+        carregar_dados_gerais.clear()
 
     def update_log_status(self, log_id, data_real, valor_final, obs_final, resp_final, km_final):
         sh = self._get_connection()
@@ -127,7 +127,7 @@ class FleetDatabase:
                 new_obs = f"{old_obs} | Baixa: {obs_final}" if old_obs else obs_final
                 ws.update_cell(cell.row, 9, new_obs)
                 ws.update_cell(cell.row, 10, "Concluido")
-                carregar_dados_gerais.clear() # Limpa cache ao atualizar
+                carregar_dados_gerais.clear()
         except: pass
 
     def delete_log(self, log_id):
@@ -138,7 +138,7 @@ class FleetDatabase:
             cell = ws.find(str(log_id), in_column=1)
             if cell: 
                 ws.delete_rows(cell.row)
-                carregar_dados_gerais.clear() # Limpa cache ao deletar
+                carregar_dados_gerais.clear()
                 return True
         except: return False
 
@@ -157,21 +157,21 @@ class FleetDatabase:
                 ws.update_cell(r, 7, novos_dados['resp'])
                 ws.update_cell(r, 8, novos_dados['valor'])
                 ws.update_cell(r, 9, novos_dados['obs'])
-                carregar_dados_gerais.clear() # Limpa cache ao editar
+                carregar_dados_gerais.clear()
                 return True
         except: return False
 
-# --- FUNÇÃO DE CACHE (A MÁGICA DO VELOCIDADE) ---
-@st.cache_data(ttl=300) # Mantém os dados na memória por 5 minutos
+# --- FUNÇÃO DE CACHE ---
+@st.cache_data(ttl=300)
 def carregar_dados_gerais():
-    # Instancia banco apenas para leitura
     db_temp = FleetDatabase()
-    v_sascar = db_temp.get_dataframe("vehicles")
-    pos_sascar = db_temp.get_dataframe("positions")
-    v_manual = db_temp.get_dataframe("veiculos_manuais")
-    logs = db_temp.get_dataframe("maintenance_logs")
-    lista_servicos = db_temp.get_services_list()
-    return v_sascar, pos_sascar, v_manual, logs, lista_servicos
+    return (
+        db_temp.get_dataframe("vehicles"),
+        db_temp.get_dataframe("positions"),
+        db_temp.get_dataframe("veiculos_manuais"),
+        db_temp.get_dataframe("maintenance_logs"),
+        db_temp.get_services_list()
+    )
 
 # --- 4. APP PRINCIPAL ---
 def main():
@@ -181,18 +181,15 @@ def main():
         st.header("Gestão de Frota")
         st.caption("🔄 Sincronização automática via GitHub")
         
-        # O botão agora força a limpeza do cache e recarrega
         if st.button("Atualizar Tela (F5)", use_container_width=True):
             carregar_dados_gerais.clear()
             st.rerun()
             
         st.divider()
         
-        # Carrega dados da memória (MUITO RÁPIDO)
         df_v_sascar, df_pos_sascar, df_v_manual, df_logs, lista_servicos_db = carregar_dados_gerais()
 
         with st.expander("🚗 Atualizar KM Manual", expanded=True):
-            # Veiculos manuais via cache
             lista_manuais = df_v_manual['placa'].tolist() if not df_v_manual.empty else []
             placa_manual = st.selectbox("Selecione Manual", lista_manuais)
             if placa_manual:
@@ -235,7 +232,7 @@ def main():
 
     tab_pend, tab_novo, tab_hist = st.tabs(["🚦 Pendências", "➕ Novo Lançamento", "📚 Histórico"])
 
-    # --- ABA 1: PENDÊNCIAS ---
+    # --- ABA 1: PENDÊNCIAS (GRID) ---
     with tab_pend:
         if not df_logs.empty and 'status' in df_logs.columns:
             pendentes = df_logs[df_logs['status'] != 'Concluido'].copy()
@@ -243,130 +240,115 @@ def main():
                 pendentes['km_restante'] = pd.to_numeric(pendentes['proxima_km'], errors='coerce') - pendentes['placa'].map(mapa_km_total).fillna(0)
                 pendentes = pendentes.sort_values('km_restante')
 
-                for index, row in pendentes.iterrows():
-                    placa = row['placa']
-                    km_atual = float(mapa_km_total.get(placa, 0))
-                    meta_km = float(row['proxima_km']) if row['proxima_km'] != '' else 0
-                    restante = meta_km - km_atual
-                    
-                    if restante < 0:
-                        s_cls = "status-vencido"; s_txt = f"🚨 VENCIDO ({abs(restante):,.0f} KM)"; b_col = "#d9534f"
-                    elif restante < 3000:
-                        s_cls = "status-atencao"; s_txt = f"⚠️ ATENÇÃO ({restante:,.0f} KM)"; b_col = "#f0ad4e"
-                    else:
-                        s_cls = "status-ok"; s_txt = f"🟢 NO PRAZO ({restante:,.0f} KM)"; b_col = "#5cb85c"
+                # --- LÓGICA DE GRID (3 POR LINHA) ---
+                # Dividimos a lista em pedaços de 3
+                cols_num = 3
+                rows = [pendentes.iloc[i:i+cols_num] for i in range(0, len(pendentes), cols_num)]
 
-                    with st.container():
-                        st.markdown(f"""
-                        <div class="status-card" style="border-left: 5px solid {b_col}">
-                            <div style="display:flex; justify-content:space-between; align-items:center;">
-                                <span class="placa-title">{placa}</span>
-                                <span class="{s_cls}">{s_txt}</span>
+                for row_chunk in rows:
+                    cols = st.columns(cols_num)
+                    # Itera sobre os itens dessa linha
+                    for idx, (index, row) in enumerate(row_chunk.iterrows()):
+                        with cols[idx]: # Coloca na coluna correta (0, 1 ou 2)
+                            placa = row['placa']
+                            km_atual = float(mapa_km_total.get(placa, 0))
+                            meta_km = float(row['proxima_km']) if row['proxima_km'] != '' else 0
+                            restante = meta_km - km_atual
+                            
+                            if restante < 0:
+                                s_cls = "status-vencido"; s_txt = f"🚨 VENCIDO ({abs(restante):,.0f} KM)"; b_col = "#d9534f"
+                            elif restante < 3000:
+                                s_cls = "status-atencao"; s_txt = f"⚠️ ATENÇÃO ({restante:,.0f} KM)"; b_col = "#f0ad4e"
+                            else:
+                                s_cls = "status-ok"; s_txt = f"🟢 NO PRAZO ({restante:,.0f} KM)"; b_col = "#5cb85c"
+
+                            st.markdown(f"""
+                            <div class="status-card" style="border-left: 5px solid {b_col}">
+                                <div style="display:flex; justify-content:space-between; align-items:center;">
+                                    <span class="placa-title">{placa}</span>
+                                    <span class="{s_cls}">{s_txt}</span>
+                                </div>
+                                <div style="margin: 5px 0;"><b>{row['tipo_servico']}</b></div>
+                                <div class="meta-info">Resp: {row['responsavel']}</div>
+                                <div class="meta-info">Meta: {meta_km:,.0f} | Atual: {km_atual:,.0f}</div>
                             </div>
-                            <div><b>{row['tipo_servico']}</b> <span style="color:#888">| Resp: {row['responsavel']}</span></div>
-                            <div class="meta-info">Meta: {meta_km:,.0f} km | Atual: {km_atual:,.0f} km</div>
-                        </div>
-                        """, unsafe_allow_html=True)
-                        
-                        c1, c2, c3 = st.columns([2, 2, 0.5])
-                        
-                        with c1.expander("✅ Baixar O.S."):
-                            with st.form(key=f"bx_{row['id']}"):
-                                c_bx1, c_bx2 = st.columns(2)
-                                dt_bx = c_bx1.date_input("Data Real", datetime.now() - timedelta(hours=3)) 
-                                km_real_bx = c_bx2.number_input("KM Realizado (No Painel)", value=km_atual, step=100.0)
-
-                                c_bx3, c_bx4 = st.columns(2)
-                                vl_bx = c_bx3.number_input("Valor R$", value=float(row['valor']) if row['valor'] else 0.0)
-                                resp_bx = c_bx4.text_input("Responsável", value=row['responsavel']) 
-                                obs_bx = st.text_input("Obs")
-                                
-                                st.divider()
-                                
-                                # Cálculo inteligente de intervalo na baixa
-                                try:
-                                    base_antiga = float(row['km_realizada']) if row['km_realizada'] else 0
-                                    meta_antiga = float(row['proxima_km'])
-                                    if base_antiga > 0:
-                                        intervalo_sugerido = meta_antiga - base_antiga
-                                    else:
-                                        intervalo_sugerido = 10000.0
-                                    if intervalo_sugerido <= 0: intervalo_sugerido = 10000.0
-                                except:
-                                    intervalo_sugerido = 10000.0
-
-                                reagendar_bx = st.checkbox(f"🔄 Reagendar próxima? (Intervalo Sugerido: {intervalo_sugerido:,.0f})")
-                                
-                                intervalo_final = 0.0
-                                if reagendar_bx:
-                                    intervalo_final = st.number_input("Intervalo (KM)", value=intervalo_sugerido, step=1000.0)
-                                
-                                if st.form_submit_button("Concluir"):
-                                    db.update_log_status(row['id'], dt_bx, vl_bx, obs_bx, resp_bx, km_real_bx)
+                            """, unsafe_allow_html=True)
+                            
+                            # --- BOX DE BAIXA (LIMPO) ---
+                            with st.expander("✅ Baixar O.S."):
+                                with st.form(key=f"bx_{row['id']}"):
+                                    # Campos ZERADOS (Limpos)
+                                    km_real_bx = st.number_input("KM Realizado (Painel)", value=0.0, step=100.0)
+                                    dt_bx = st.date_input("Data Real", datetime.now() - timedelta(hours=3))
+                                    vl_bx = st.number_input("Valor R$", value=0.0, step=10.0)
+                                    resp_bx = st.text_input("Responsável", value=row['responsavel']) 
+                                    obs_bx = st.text_input("Obs")
+                                    
+                                    st.divider()
+                                    reagendar_bx = st.checkbox(f"🔄 Reagendar próxima?")
+                                    # Intervalo ZERADO
+                                    intervalo_final = 0.0
                                     if reagendar_bx:
-                                        nova_meta = km_real_bx + intervalo_final
-                                        dados_reagendamento = {
-                                            "placa": placa, "tipo": row['tipo_servico'], "km": "", "data": "",
-                                            "prox_km": nova_meta, "valor": 0, "obs": "Reagendamento automático na baixa.",
-                                            "resp": resp_bx, "status": "Agendado"
-                                        }
-                                        db.add_log(dados_reagendamento)
-                                        st.toast(f"✅ Baixado e reagendado para {nova_meta:,.0f} KM!")
-                                    else:
-                                        st.toast("✅ O.S. Baixada com sucesso!")
-                                    time.sleep(1); st.rerun()
+                                        intervalo_final = st.number_input("Intervalo (KM)", value=0.0, step=1000.0)
+                                    
+                                    if st.form_submit_button("Concluir"):
+                                        if km_real_bx == 0:
+                                            st.error("Digite o KM Realizado!")
+                                        else:
+                                            db.update_log_status(row['id'], dt_bx, vl_bx, obs_bx, resp_bx, km_real_bx)
+                                            if reagendar_bx:
+                                                if intervalo_final == 0:
+                                                    st.warning("Atenção: Intervalo está 0.")
+                                                nova_meta = km_real_bx + intervalo_final
+                                                dados_reagendamento = {
+                                                    "placa": placa, "tipo": row['tipo_servico'], "km": "", "data": "",
+                                                    "prox_km": nova_meta, "valor": 0, "obs": "Reagendamento automático na baixa.",
+                                                    "resp": resp_bx, "status": "Agendado"
+                                                }
+                                                db.add_log(dados_reagendamento)
+                                                st.toast(f"✅ Baixado e reagendado para {nova_meta:,.0f} KM!")
+                                            else:
+                                                st.toast("✅ O.S. Baixada com sucesso!")
+                                            time.sleep(1); st.rerun()
 
-                        with c2.expander("✏️ Editar"):
-                            with st.form(key=f"ed_{row['id']}"):
-                                e_placa = st.selectbox("Placa", todas_placas, index=todas_placas.index(row['placa']) if row['placa'] in todas_placas else 0)
-                                idx_serv = 0
-                                if row['tipo_servico'] in lista_servicos_db:
-                                    idx_serv = lista_servicos_db.index(row['tipo_servico'])
-                                e_tipo = st.selectbox("Serviço", lista_servicos_db, index=idx_serv)
-                                e_resp = st.text_input("Resp", value=row['responsavel'])
-                                e_km = st.number_input("KM Base", value=float(row['km_realizada']) if row['km_realizada'] else 0.0)
-                                e_prox = st.number_input("Meta KM", value=float(row['proxima_km']) if row['proxima_km'] else 0.0)
-                                e_val = st.number_input("Valor", value=float(row['valor']) if row['valor'] else 0.0)
-                                e_obs = st.text_area("Obs", value=row['obs'])
-                                if st.form_submit_button("Salvar"):
-                                    novos = {'placa':e_placa, 'tipo':e_tipo, 'resp':e_resp, 'km':e_km, 'prox_km':e_prox, 'valor':e_val, 'obs':e_obs}
-                                    db.edit_log_full(row['id'], novos)
-                                    st.rerun()
-                        if c3.button("🗑️", key=f"del_{row['id']}", help="Excluir"):
-                            db.delete_log(row['id']); st.rerun()
+                            with st.expander("✏️ Editar"):
+                                with st.form(key=f"ed_{row['id']}"):
+                                    e_placa = st.selectbox("Placa", todas_placas, index=todas_placas.index(row['placa']) if row['placa'] in todas_placas else 0)
+                                    idx_serv = 0
+                                    if row['tipo_servico'] in lista_servicos_db:
+                                        idx_serv = lista_servicos_db.index(row['tipo_servico'])
+                                    e_tipo = st.selectbox("Serviço", lista_servicos_db, index=idx_serv)
+                                    e_resp = st.text_input("Resp", value=row['responsavel'])
+                                    e_km = st.number_input("KM Base", value=float(row['km_realizada']) if row['km_realizada'] else 0.0)
+                                    e_prox = st.number_input("Meta KM", value=float(row['proxima_km']) if row['proxima_km'] else 0.0)
+                                    e_val = st.number_input("Valor", value=float(row['valor']) if row['valor'] else 0.0)
+                                    e_obs = st.text_area("Obs", value=row['obs'])
+                                    if st.form_submit_button("Salvar"):
+                                        novos = {'placa':e_placa, 'tipo':e_tipo, 'resp':e_resp, 'km':e_km, 'prox_km':e_prox, 'valor':e_val, 'obs':e_obs}
+                                        db.edit_log_full(row['id'], novos)
+                                        st.rerun()
+                            
+                            # Botão de Excluir
+                            if st.button("🗑️", key=f"del_{row['id']}", help="Excluir"):
+                                db.delete_log(row['id']); st.rerun()
             else:
                 st.info("Nenhuma pendência.")
 
-    # --- ABA 2: NOVO LANÇAMENTO (COM CACHE) ---
+    # --- ABA 2: NOVO LANÇAMENTO (LIMPO) ---
     with tab_novo:
         st.subheader("Registrar Manutenção")
         c_sel1, c_sel2 = st.columns(2)
-        
-        # Agora o dropdown é rápido porque a lista_servicos_db vem do cache
         p_selected = c_sel1.selectbox("Selecione a Placa", todas_placas) if todas_placas else None
         s_selected = c_sel2.selectbox("Selecione o Serviço", lista_servicos_db)
-        
-        km_atual_auto = 0.0
-        if p_selected:
-            km_atual_auto = float(mapa_km_total.get(p_selected, 0.0))
-        
-        # Lógica de Padrões
-        intervalo_sugerido_novo = 10000.0
-        if s_selected == "Troca de Óleo Motor":
-            intervalo_sugerido_novo = 40000.0
-        elif s_selected == "Troca de Óleo Cambio e Diferencial":
-            intervalo_sugerido_novo = 160000.0
         
         st.divider()
         with st.form("form_novo", clear_on_submit=False):
             c1, c2 = st.columns(2)
-            km_base = c1.number_input("KM Atual (Base)", value=km_atual_auto, step=100.0)
+            # CAMPOS LIMPOS (0.0)
+            km_base = c1.number_input("KM Atual (Base)", value=0.0, step=100.0)
+            intervalo = c2.number_input("Intervalo para próxima (KM)", value=0.0, step=1000.0)
             
-            # Atualiza o intervalo instantaneamente sem recarregar a página da web
-            intervalo = c2.number_input("Intervalo para próxima (KM)", value=intervalo_sugerido_novo, step=1000.0)
-            
-            prox_calc = km_base + intervalo
-            st.info(f"📅 Próxima manutenção será agendada para: **{prox_calc:,.0f} KM**")
+            # Sem aviso de "Próxima manutenção..."
             
             c3, c4, c5 = st.columns(3)
             dt_reg = c3.date_input("Data do Serviço", datetime.now() - timedelta(hours=3))
@@ -382,7 +364,10 @@ def main():
             if st.form_submit_button("💾 Salvar Lançamento"):
                 if not p_selected:
                     st.error("Selecione uma placa primeiro.")
+                elif km_base == 0:
+                    st.error("Preencha o KM Base!")
                 else:
+                    prox_calc = km_base + intervalo
                     stt = "Concluido" if is_done else "Agendado"
                     km_log = km_base if is_done else ""
                     d1 = {"placa": p_selected, "tipo": s_selected, "km": km_log, "data": dt_reg, 
