@@ -314,24 +314,20 @@ def main():
 
     # --- PROCESSAMENTO ---
     mapa_km_total = {}
+
+    # --- DEBUG INCONDICIONAL ---
+    with st.sidebar:
+        st.divider()
+        st.write("🐞 DEBUG CHECK")
+        st.write(f"Veículos (DB): {len(df_v_sascar)}")
+        st.write(f"Posições (DB): {len(df_pos_sascar)}")
+        st.write(f"Manuais: {len(df_v_manual)}")
+    # ---------------------------
+
     if not df_pos_sascar.empty:
-        df_pos_sascar['timestamp'] = pd.to_datetime(df_pos_sascar['timestamp'], errors='coerce')
-        df_pos_sascar['odometro'] = pd.to_numeric(df_pos_sascar['odometro'], errors='coerce')
         last_pos = df_pos_sascar.sort_values('timestamp').groupby('id_veiculo').tail(1)
         if not df_v_sascar.empty:
             map_id_placa = dict(zip(df_v_sascar['id_veiculo'].astype(str), df_v_sascar['placa']))
-            
-            # --- DEBUG ---
-            with st.sidebar:
-                st.divider()
-                st.write("🐞 DEBUG MODE")
-                st.write(f"Veículos DB: {len(df_v_sascar)}")
-                st.write(f"Posições DB: {len(df_pos_sascar)}")
-                if not df_v_sascar.empty:
-                    st.write("Ex. Map ID:", list(map_id_placa.items())[:3])
-                st.write(f"Map KM Keys: {len(mapa_km_total)}")
-                st.write("Ex. KM:", list(mapa_km_total.items())[:3])
-            # -------------
 
             for _, row in last_pos.iterrows():
                 p_id = str(row['id_veiculo'])
