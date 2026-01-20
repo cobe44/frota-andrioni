@@ -320,9 +320,19 @@ def main():
         last_pos = df_pos_sascar.sort_values('timestamp').groupby('id_veiculo').tail(1)
         if not df_v_sascar.empty:
             map_id_placa = dict(zip(df_v_sascar['id_veiculo'].astype(str), df_v_sascar['placa']))
+            
+            # --- DEBUG ---
+            # with st.sidebar:
+            #     st.write(f"Veículos DB: {len(df_v_sascar)}")
+            #     st.write(f"Posições DB: {len(df_pos_sascar)}")
+            #     st.write(f"Últimas Pos: {len(last_pos)}")
+            # -------------
+
             for _, row in last_pos.iterrows():
                 p_id = str(row['id_veiculo'])
-                p_placa = map_id_placa.get(p_id, row['placa']) 
+                # FIX: row['placa'] não existe no dataframe do banco SQL.
+                # Se não achar no map, usa o ID como fallback visual
+                p_placa = map_id_placa.get(p_id, f"ID-{p_id}") 
                 mapa_km_total[p_placa] = row['odometro']
     if not df_v_manual.empty:
         for _, row in df_v_manual.iterrows():
