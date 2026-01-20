@@ -17,6 +17,7 @@ def load_config():
             return tomllib.load(f)
     except Exception as e:
         # Fallback para st.secrets ou env se o arquivo não existir ou falhar
+        print(f"❌ [DEBUG] Error loading config.toml: {e}")
         return {}
 
 CONFIG = load_config()
@@ -58,9 +59,24 @@ class FleetDatabase:
 
     def _get_pg_connection(self):
         try:
-            db_url = CONFIG.get("database", {}).get("url")
+            db_url = None
+            
+            # 1. Tenta pegar dos st.secrets (Produção/Streamlit Cloud)
+            if "database" in st.secrets and "url" in st.secrets["database"]:
+                db_url = st.secrets["database"]["url"]
+            
+            # 2. Se não achou, tenta do config.toml (Local)
             if not db_url:
-                db_url = os.getenv("DATABASE_URL") # Fallback
+                db_url = CONFIG.get("database", {}).get("url")
+            
+            # 3. Fallback para variáveis de ambiente
+            if not db_url:
+                db_url = os.getenv("DATABASE_URL")
+            
+            if not db_url:
+                print("❌ [DEBUG] DATABASE_URL não encontrada (secrets, config ou env)!")
+                return None
+
             return psycopg2.connect(db_url)
         except Exception as e:
             st.error(f"Erro conexão Postgres: {e}")
