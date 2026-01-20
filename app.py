@@ -4,6 +4,22 @@ import gspread
 from gspread.exceptions import APIError
 from datetime import datetime, timedelta
 import time
+import os
+import psycopg2
+try:
+    import tomllib
+except ImportError:
+    import tomli as tomllib
+
+def load_config():
+    try:
+        with open("config.toml", "rb") as f:
+            return tomllib.load(f)
+    except Exception as e:
+        # Fallback para st.secrets ou env se o arquivo não existir ou falhar
+        return {}
+
+CONFIG = load_config()
 
 # --- 1. CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
@@ -40,6 +56,16 @@ class FleetDatabase:
         self.sheet_name = sheet_name
         self.log_cols = ["id", "placa", "tipo_servico", "km_realizada", "data_realizada", "proxima_km", "responsavel", "valor", "obs", "status"]
 
+    def _get_pg_connection(self):
+        try:
+            db_url = CONFIG.get("database", {}).get("url")
+            if not db_url:
+                db_url = os.getenv("DATABASE_URL") # Fallback
+            return psycopg2.connect(db_url)
+        except Exception as e:
+            st.error(f"Erro conexão Postgres: {e}")
+            return None
+
     @st.cache_resource
     def _get_connection(_self):
         try:
@@ -58,6 +84,62 @@ class FleetDatabase:
         return None
     
     def get_dataframe(self, worksheet_name):
+        # Rota para Postgres (Dados de Rastreamento)
+        if worksheet_name == "vehicles":
+            conn = self._get_pg_connection()
+            if not conn: return pd.DataFrame()
+            try:
+                query = "SELECT id_sascar as id_veiculo, placa FROM veiculos"
+                df = pd.read_sql_query(query, conn)
+                conn.close()
+                return df
+            except Exception as e:
+                st.error(f"Erro ao ler veículos do DB: {e}")
+                return pd.DataFrame()
+
+        if worksheet_name == "positions":
+            conn = self._get_pg_connection()
+            if not conn: return pd.DataFrame()
+            try:
+                # Buscar apenas a última posição de cada veículo para otimizar
+                # Mas o app original carrega 'df_pos_sascar' e faz group/tail. 
+                # Vamos carregar as últimas 24h ou tudo? O original carrega tudo da planilha?
+                # Vamos carregar tudo da tabela 'posicoes_raw' pode ser pesado.
+                # A logica do app é: last_pos = df_pos_sascar.sort_values('timestamp').groupby('id_veiculo').tail(1)
+                # Podemos fazer essa query direto no banco para ser muito mais otimizado.
+                
+                # Mas para manter compatibilidade exata com o DF esperado:
+                query = "SELECT id_veiculo, data_hora as timestamp, odometro, latitude, longitude, ignicao, velocidade FROM posicoes_raw"
+                
+                # Otimizacao: Se a tabela for grande, isso vai travar.
+                # O app filtra? Nao. Ele carrega tudo.
+                # Vamos assumir que devemos trazer tudo por enquanto, ou limitar por data se necessario.
+                # DICA: Melhor trazer apenas as ultimas posicoes (DISTINCT ON id_veiculo ORDER BY data_hora DESC) se o objetivo é só 'last_pos'
+                # Porem, o app pode usar historico? 
+                # Linha 222: last_pos = ... groupby ... tail(1).
+                # O app usa df_pos_sascar APENAS para pegar a ULTIMA posicao.
+                
+                query_opt = """
+                    SELECT DISTINCT ON (id_veiculo) 
+                        id_veiculo, 
+                        data_hora as timestamp, 
+                        odometro, 
+                        latitude, 
+                        longitude 
+                    FROM posicoes_raw 
+                    ORDER BY id_veiculo, data_hora DESC
+                """
+                # DISTINCT ON é Postgres specific. Perfeito.
+                
+                df = pd.read_sql_query(query_opt, conn)
+                conn.close()
+                return df
+            except Exception as e:
+                # Fallback se DISTINCT ON falhar (ex: versoes antigas, mas Supabase suporta)
+                st.error(f"Erro ao ler posições do DB: {e}")
+                return pd.DataFrame()
+
+        # Rota Original (Google Sheets)
         sh = self._get_connection()
         if not sh: return pd.DataFrame()
         try:
