@@ -5,7 +5,11 @@ from gspread.exceptions import APIError
 from datetime import datetime, timedelta
 import time
 import os
+import json
 import psycopg2
+from sqlalchemy import create_engine
+from dotenv import load_dotenv
+load_dotenv()
 try:
     import tomllib
 except ImportError:
@@ -57,13 +61,18 @@ class FleetDatabase:
         self.sheet_name = sheet_name
         self.log_cols = ["id", "placa", "tipo_servico", "km_realizada", "data_realizada", "proxima_km", "responsavel", "valor", "obs", "status"]
 
-    def _get_pg_connection(self):
+    def _get_pg_engine(self):
         try:
             db_url = None
             
             # 1. Tenta pegar dos st.secrets (Produção/Streamlit Cloud)
-            if "database" in st.secrets and "url" in st.secrets["database"]:
-                db_url = st.secrets["database"]["url"]
+            try:
+                if "database" in st.secrets and "url" in st.secrets["database"]:
+                    db_url = st.secrets["database"]["url"]
+            except FileNotFoundError:
+                pass 
+            except Exception:
+                pass
             
             # 2. Se não achou, tenta do config.toml (Local)
             if not db_url:
@@ -77,16 +86,56 @@ class FleetDatabase:
                 print("❌ [DEBUG] DATABASE_URL não encontrada (secrets, config ou env)!")
                 return None
 
-            return psycopg2.connect(db_url)
+            # SQLAlchemy Engine
+            return create_engine(db_url)
         except Exception as e:
-            st.error(f"Erro conexão Postgres: {e}")
+            st.error(f"Erro ao criar engine Postgres: {e}")
             return None
 
     @st.cache_resource
     def _get_connection(_self):
+        creds_dict = None
+        # 1. Tenta pegar dos st.secrets (Streamlit Cloud)
         try:
-            creds = st.secrets["gcp_service_account"]
-            gc = gspread.service_account_from_dict(creds)
+            if "gcp_service_account" in st.secrets:
+                creds_dict = st.secrets["gcp_service_account"]
+        except: pass
+        
+        # 2. Fallback: Variável de Ambiente GCP_CREDENTIALS (String JSON)
+        if not creds_dict:
+            env_json = os.getenv("GCP_CREDENTIALS")
+            if env_json:
+                try:
+                    creds_dict = json.loads(env_json)
+                except Exception as e:
+                    st.error(f"Erro ao fazer parse do JSON em GCP_CREDENTIALS: {e}")
+            
+            # 3. Fallback: Variáveis de Ambiente individuais (Formato atual do user)
+            elif os.getenv("private_key"): 
+                try:
+                    # Reconstrói o dicionário a partir das variáveis soltas no .env
+                    creds_dict = {
+                        "type": os.getenv("type"),
+                        "project_id": os.getenv("project_id"),
+                        "private_key_id": os.getenv("private_key_id"),
+                        "private_key": os.getenv("private_key").replace("\\n", "\n") if os.getenv("private_key") else None,
+                        "client_email": os.getenv("client_email"),
+                        "client_id": os.getenv("client_id"),
+                        "auth_uri": os.getenv("auth_uri"),
+                        "token_uri": os.getenv("token_uri"),
+                        "auth_provider_x509_cert_url": os.getenv("auth_provider_x509_cert_url"),
+                        "client_x509_cert_url": os.getenv("client_x509_cert_url"),
+                        "universe_domain": os.getenv("universe_domain")
+                    }
+                except Exception as e:
+                     st.error(f"Erro ao montar credenciais via variáveis soltas: {e}")
+
+        if not creds_dict:
+            st.error("Credenciais do Google Sheets não encontradas (st.secrets ou env GCP_CREDENTIALS).")
+            return None
+
+        try:
+            gc = gspread.service_account_from_dict(creds_dict)
             return gc.open(_self.sheet_name)
         except Exception as e:
             st.error(f"Erro conexão Sheets: {e}")
@@ -102,39 +151,21 @@ class FleetDatabase:
     def get_dataframe(self, worksheet_name):
         # Rota para Postgres (Dados de Rastreamento)
         if worksheet_name == "vehicles":
-            conn = self._get_pg_connection()
-            if not conn: return pd.DataFrame()
+            engine = self._get_pg_engine()
+            if not engine: return pd.DataFrame()
             try:
                 query = "SELECT id_sascar as id_veiculo, placa FROM veiculos"
-                df = pd.read_sql_query(query, conn)
-                conn.close()
+                with engine.connect() as conn:
+                    df = pd.read_sql_query(query, conn)
                 return df
             except Exception as e:
                 st.error(f"Erro ao ler veículos do DB: {e}")
                 return pd.DataFrame()
 
         if worksheet_name == "positions":
-            conn = self._get_pg_connection()
-            if not conn: return pd.DataFrame()
+            engine = self._get_pg_engine()
+            if not engine: return pd.DataFrame()
             try:
-                # Buscar apenas a última posição de cada veículo para otimizar
-                # Mas o app original carrega 'df_pos_sascar' e faz group/tail. 
-                # Vamos carregar as últimas 24h ou tudo? O original carrega tudo da planilha?
-                # Vamos carregar tudo da tabela 'posicoes_raw' pode ser pesado.
-                # A logica do app é: last_pos = df_pos_sascar.sort_values('timestamp').groupby('id_veiculo').tail(1)
-                # Podemos fazer essa query direto no banco para ser muito mais otimizado.
-                
-                # Mas para manter compatibilidade exata com o DF esperado:
-                query = "SELECT id_veiculo, data_hora as timestamp, odometro, latitude, longitude, ignicao, velocidade FROM posicoes_raw"
-                
-                # Otimizacao: Se a tabela for grande, isso vai travar.
-                # O app filtra? Nao. Ele carrega tudo.
-                # Vamos assumir que devemos trazer tudo por enquanto, ou limitar por data se necessario.
-                # DICA: Melhor trazer apenas as ultimas posicoes (DISTINCT ON id_veiculo ORDER BY data_hora DESC) se o objetivo é só 'last_pos'
-                # Porem, o app pode usar historico? 
-                # Linha 222: last_pos = ... groupby ... tail(1).
-                # O app usa df_pos_sascar APENAS para pegar a ULTIMA posicao.
-                
                 query_opt = """
                     SELECT DISTINCT ON (id_veiculo) 
                         id_veiculo, 
@@ -145,13 +176,10 @@ class FleetDatabase:
                     FROM posicoes_raw 
                     ORDER BY id_veiculo, data_hora DESC
                 """
-                # DISTINCT ON é Postgres specific. Perfeito.
-                
-                df = pd.read_sql_query(query_opt, conn)
-                conn.close()
+                with engine.connect() as conn:
+                    df = pd.read_sql_query(query_opt, conn)
                 return df
             except Exception as e:
-                # Fallback se DISTINCT ON falhar (ex: versoes antigas, mas Supabase suporta)
                 st.error(f"Erro ao ler posições do DB: {e}")
                 return pd.DataFrame()
 
@@ -319,6 +347,19 @@ def main():
     with st.sidebar:
         st.divider()
         st.write("🐞 DEBUG CHECK")
+        
+        # Testar conexão diretamente para exibir erro se houver
+        # db._get_pg_engine() retorna um engine, não uma conexão raw
+        engine_test = db._get_pg_engine()
+        if engine_test is None:
+            st.error("❌ FALHA CONEXÃO POSTGRES! Verifique logs/console.")
+        else:
+            try:
+                with engine_test.connect() as conn:
+                    st.success("✅ Conexão DB OK")
+            except Exception as e:
+                st.error(f"❌ Erro ao conectar: {e}")
+
         st.write(f"Veículos (DB): {len(df_v_sascar)}")
         st.write(f"Posições (DB): {len(df_pos_sascar)}")
         st.write(f"Manuais: {len(df_v_manual)}")
