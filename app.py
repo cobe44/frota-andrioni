@@ -322,10 +322,15 @@ def main():
             map_id_placa = dict(zip(df_v_sascar['id_veiculo'].astype(str), df_v_sascar['placa']))
             
             # --- DEBUG ---
-            # with st.sidebar:
-            #     st.write(f"Veículos DB: {len(df_v_sascar)}")
-            #     st.write(f"Posições DB: {len(df_pos_sascar)}")
-            #     st.write(f"Últimas Pos: {len(last_pos)}")
+            with st.sidebar:
+                st.divider()
+                st.write("🐞 DEBUG MODE")
+                st.write(f"Veículos DB: {len(df_v_sascar)}")
+                st.write(f"Posições DB: {len(df_pos_sascar)}")
+                if not df_v_sascar.empty:
+                    st.write("Ex. Map ID:", list(map_id_placa.items())[:3])
+                st.write(f"Map KM Keys: {len(mapa_km_total)}")
+                st.write("Ex. KM:", list(mapa_km_total.items())[:3])
             # -------------
 
             for _, row in last_pos.iterrows():
