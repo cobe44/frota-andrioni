@@ -372,6 +372,13 @@ def main():
         st.write(f"Veículos (DB): {len(df_v_sascar)}")
         st.write(f"Posições (DB): {len(df_pos_sascar)}")
         st.write(f"Manuais: {len(df_v_manual)}")
+        
+        with st.expander("🔍 Detalhes Veículos"):
+            if not df_v_sascar.empty:
+                st.write("Colunas:", df_v_sascar.columns.tolist())
+                st.dataframe(df_v_sascar[['placa', 'odometro']].head(10) if 'odometro' in df_v_sascar.columns else df_v_sascar.head(), use_container_width=True)
+            else:
+                st.warning("DataFrame vazio")
     # ---------------------------
 
     if not df_v_sascar.empty:
