@@ -376,37 +376,13 @@ def main():
             except Exception as e:
                 st.error(f"❌ Erro ao conectar: {e}")
         
-        # DEBUG SECRETS (Safe)
-        st.write("--- Secrets Check ---")
-        try:
-            if hasattr(st, "secrets"):
-                keys = list(st.secrets.keys())
-                st.write(f"Keys encontradas: {keys}")
-                if "database" in keys:
-                    st.write("✅ 'database' key found")
-                    db_keys = list(st.secrets["database"].keys())
-                    st.write(f"Keys inside 'database': {db_keys}")
-                    if "url" in st.secrets["database"]:
-                        st.write("✅ 'url' found in database")
-                    else:
-                        st.error("❌ 'url' MISSING in database")
-                else:
-                    st.error("❌ 'database' section MISSING")
-            else:
-                st.error("❌ st.secrets não disponível")
-        except Exception as e:
-            st.error(f"Error checking secrets: {e}")
+
 
         st.write(f"Veículos (DB): {len(df_v_sascar)}")
         st.write(f"Posições (DB): {len(df_pos_sascar)}")
         st.write(f"Manuais: {len(df_v_manual)}")
         
-        with st.expander("🔍 Detalhes Veículos"):
-            if not df_v_sascar.empty:
-                st.write("Colunas:", df_v_sascar.columns.tolist())
-                st.dataframe(df_v_sascar[['placa', 'odometro']].head(10) if 'odometro' in df_v_sascar.columns else df_v_sascar.head(), use_container_width=True)
-            else:
-                st.warning("DataFrame vazio")
+
     # ---------------------------
 
     if not df_v_sascar.empty:
