@@ -154,7 +154,16 @@ class FleetDatabase:
             engine = self._get_pg_engine()
             if not engine: return pd.DataFrame()
             try:
-                query = "SELECT id_sascar as id_veiculo, placa FROM veiculos"
+                # Query com JOIN para pegar o último odômetro
+                query = """
+                    SELECT v.id_sascar as id_veiculo, v.placa, p.odometro 
+                    FROM veiculos v
+                    LEFT JOIN (
+                        SELECT DISTINCT ON (id_veiculo) id_veiculo, odometro
+                        FROM posicoes_raw
+                        ORDER BY id_veiculo, data_hora DESC
+                    ) p ON v.id_sascar = p.id_veiculo
+                """
                 with engine.connect() as conn:
                     df = pd.read_sql_query(query, conn)
                 return df
@@ -365,20 +374,16 @@ def main():
         st.write(f"Manuais: {len(df_v_manual)}")
     # ---------------------------
 
-    if not df_pos_sascar.empty:
-        last_pos = df_pos_sascar.sort_values('timestamp').groupby('id_veiculo').tail(1)
-        if not df_v_sascar.empty:
-            map_id_placa = dict(zip(df_v_sascar['id_veiculo'].astype(str), df_v_sascar['placa']))
-
-            for _, row in last_pos.iterrows():
-                p_id = str(row['id_veiculo'])
-                # FIX: row['placa'] não existe no dataframe do banco SQL.
-                # Se não achar no map, usa o ID como fallback visual
-                p_placa = map_id_placa.get(p_id, f"ID-{p_id}") 
-                mapa_km_total[p_placa] = row['odometro']
+    if not df_v_sascar.empty:
+        # Agora o odômetro já vem na query de veículos (join)
+        for _, row in df_v_sascar.iterrows():
+            if pd.notna(row.get('odometro')):
+                mapa_km_total[row['placa']] = row['odometro']
+    
+    # Manuais sobrescrevem automaticos
     if not df_v_manual.empty:
         for _, row in df_v_manual.iterrows():
-            mapa_km_total[row['placa']] = float(row['odometro'])
+             mapa_km_total[row['placa']] = float(row['odometro'])
 
     todas_placas = list(mapa_km_total.keys())
     todas_placas.sort()
