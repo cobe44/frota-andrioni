@@ -67,8 +67,15 @@ class FleetDatabase:
             
             # 1. Tenta pegar dos st.secrets (Produção/Streamlit Cloud)
             try:
-                if "database" in st.secrets and "url" in st.secrets["database"]:
-                    db_url = st.secrets["database"]["url"]
+                if "database" in st.secrets:
+                    db_sec = st.secrets["database"]
+                    if "url" in db_sec:
+                        db_url = db_sec["url"]
+                    elif "host" in db_sec and "user" in db_sec:
+                        # Monta URL a partir dos componentes
+                        from urllib.parse import quote_plus
+                        encoded_pass = quote_plus(db_sec["password"]) if "password" in db_sec else ""
+                        db_url = f"postgresql://{db_sec['user']}:{encoded_pass}@{db_sec['host']}:{db_sec.get('port', 5432)}/{db_sec.get('database', 'postgres')}"
             except FileNotFoundError:
                 pass 
             except Exception:
@@ -377,6 +384,8 @@ def main():
                 st.write(f"Keys encontradas: {keys}")
                 if "database" in keys:
                     st.write("✅ 'database' key found")
+                    db_keys = list(st.secrets["database"].keys())
+                    st.write(f"Keys inside 'database': {db_keys}")
                     if "url" in st.secrets["database"]:
                         st.write("✅ 'url' found in database")
                     else:
