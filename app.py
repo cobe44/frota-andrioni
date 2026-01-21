@@ -368,6 +368,25 @@ def main():
                     st.success("✅ Conexão DB OK")
             except Exception as e:
                 st.error(f"❌ Erro ao conectar: {e}")
+        
+        # DEBUG SECRETS (Safe)
+        st.write("--- Secrets Check ---")
+        try:
+            if hasattr(st, "secrets"):
+                keys = list(st.secrets.keys())
+                st.write(f"Keys encontradas: {keys}")
+                if "database" in keys:
+                    st.write("✅ 'database' key found")
+                    if "url" in st.secrets["database"]:
+                        st.write("✅ 'url' found in database")
+                    else:
+                        st.error("❌ 'url' MISSING in database")
+                else:
+                    st.error("❌ 'database' section MISSING")
+            else:
+                st.error("❌ st.secrets não disponível")
+        except Exception as e:
+            st.error(f"Error checking secrets: {e}")
 
         st.write(f"Veículos (DB): {len(df_v_sascar)}")
         st.write(f"Posições (DB): {len(df_pos_sascar)}")
